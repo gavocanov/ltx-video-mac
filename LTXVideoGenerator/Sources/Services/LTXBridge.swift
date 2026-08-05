@@ -599,6 +599,7 @@ class LTXBridge {
                 DispatchQueue.global(qos: .userInitiated).async {
                     let process = Process()
                     processBox.process = process
+                    ProcessRegistry.shared.register(process)
                     process.executableURL = URL(fileURLWithPath: executable)
                     process.arguments = arguments
                     var env: [String: String] = [:]
@@ -684,13 +685,9 @@ class LTXBridge {
             }
         }
         } onCancel: {
-            // Kill the whole process group so the Python script and its
-            // children (MLX workers) die too.
+            // Kill the runner by PID only (never -pid, which could hit the
+            // app's process group). The runner forwards SIGTERM to its child.
             if let process = processBox.process, process.isRunning {
-                let pid = process.processIdentifier
-                if pid > 0 {
-                    kill(-pid, SIGKILL)
-                }
                 process.terminate()
             }
         }

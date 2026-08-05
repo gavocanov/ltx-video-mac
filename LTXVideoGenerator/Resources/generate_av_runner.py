@@ -45,6 +45,13 @@ def parse_args():
 
 
 def main():
+    # Become a new session / process-group leader so the macOS app can kill this
+    # runner AND its child (generate_av.py) with a single kill(-pid, SIGKILL).
+    try:
+        os.setsid()
+    except OSError:
+        pass  # already a group leader (e.g. run from a terminal)
+
     args = parse_args()
 
     log_file = open(args.log_file, "w")
@@ -243,6 +250,19 @@ def main():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT
         )
+
+        # Forward termination signals to the child so killing this runner also
+        # stops generate_av.py (the macOS app sends SIGTERM via process.terminate()).
+        def _forward_signal(signum, frame):
+            try:
+                if process.poll() is None:
+                    process.send_signal(signum)
+            except Exception:
+                pass
+            sys.exit(128 + signum)
+
+        signal.signal(signal.SIGTERM, _forward_signal)
+        signal.signal(signal.SIGINT, _forward_signal)
 
         # Unbuffered read: use os.read() on the raw fd so every line the inner process
         # flushes is available immediately.  process.stdout.read(n) uses Python's

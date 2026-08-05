@@ -25,14 +25,27 @@ final class ProcessRegistry {
     func terminateAll() {
         lock.lock()
         for process in processes where process.isRunning {
-            let pid = process.processIdentifier
-            if pid > 0 {
-                // Kill the entire process group so child processes die too.
-                kill(-pid, SIGKILL)
-            }
+            // Kill by positive PID only (never -pid) so we never touch the
+            // app's own process group. The runner forwards the signal to its
+            // child (generate_av.py).
             process.terminate()
         }
         processes.removeAll()
         lock.unlock()
+    }
+
+    /// Terminate the most recently registered running process (the current
+    /// generation). Returns true if a process was killed.
+    @discardableResult
+    func terminateCurrent() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let process = processes.last(where: { $0.isRunning }) else {
+            return false
+        }
+        // Targeted kill by PID only; the runner forwards to its child.
+        process.terminate()
+        processes.removeAll { $0 === process }
+        return true
     }
 }

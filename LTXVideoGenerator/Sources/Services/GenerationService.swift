@@ -47,6 +47,9 @@ class GenerationService: ObservableObject {
     }
     
     func cancelCurrent() {
+        // Kill the running subprocess deterministically (the task cancellation
+        // alone does not stop the Python script).
+        ProcessRegistry.shared.terminateCurrent()
         processingTask?.cancel()
         if let request = currentRequest,
            let index = queue.firstIndex(where: { $0.id == request.id }) {
