@@ -214,6 +214,10 @@ class LTXBridge {
             atPath: previewDir,
             withIntermediateDirectories: true
         )
+        // Always remove the preview dir when generation finishes (success, error, or cancel).
+        defer {
+            try? FileManager.default.removeItem(atPath: previewDir)
+        }
 
         // Apply prompt enhancement up-front so generation can continue safely even
         // when upstream enhancer internals fail.

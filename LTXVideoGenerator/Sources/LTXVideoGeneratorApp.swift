@@ -188,5 +188,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Always fires on quit - ensure no Python process is left behind.
         ProcessRegistry.shared.terminateAll()
+        // Remove any leftover latent-preview temp dirs (e.g. from a killed generation).
+        let fm = FileManager.default
+        let tmp = NSTemporaryDirectory()
+        if let entries = try? fm.contentsOfDirectory(atPath: tmp) {
+            for entry in entries where entry.hasPrefix("ltx-preview-") {
+                try? fm.removeItem(atPath: tmp + entry)
+            }
+        }
     }
 }
