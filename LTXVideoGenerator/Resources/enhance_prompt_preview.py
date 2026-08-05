@@ -55,19 +55,30 @@ def _merge_back(enhanced: str, replacements: dict[str, str]) -> str:
     return result
 
 
-def _apply_chat_template(system_prompt: str, user_content: str) -> str:
-    """Apply Gemma 3 chat template."""
-    formatted = f"<start_of_turn>user\n{system_prompt}<end_of_turn>\n"
-    formatted += f"<start_of_turn>user\n{user_content}<end_of_turn>\n"
-    formatted += "<start_of_turn>model\n"
-    return formatted
+def _apply_chat_template(tokenizer, system_prompt: str, user_content: str) -> str:
+    """Apply the tokenizer's native chat template with a proper system turn."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
 
 
-def _clean_response(response: str) -> str:
-    """Clean up the generated response."""
-    response = response.strip()
-    response = re.sub(r"^[^\w\s]+", "", response)
-    return response
+def _stop_tokens(tokenizer) -> list[str]:
+    """Return stop tokens for the model's chat template (e.g. <end_of_turn>)."""
+    stops = []
+    eos = getattr(tokenizer, "eos_token", None)
+    if eos:
+        stops.append(eos)
+    # Gemma 3 uses <end_of_turn> as the turn terminator.
+    end_of_turn = "<end_of_turn>"
+    if end_of_turn not in stops:
+        stops.append(end_of_turn)
+    return stops
 
 
 def _enhance_with_mlx_lm(
@@ -102,8 +113,8 @@ def _enhance_with_mlx_lm(
         except Exception:
             system_prompt = "You are a creative writer. Expand the user's short video prompt into a detailed, vivid description suitable for AI video generation. Include lighting, camera movement, and atmosphere."
 
-    user_content = f"user prompt: {prompt}"
-    formatted = _apply_chat_template(system_prompt, user_content)
+    user_content = prompt
+    formatted = _apply_chat_template(tokenizer, system_prompt, user_content)
 
     import mlx.core as mx
 
@@ -117,12 +128,13 @@ def _enhance_with_mlx_lm(
         prompt=formatted,
         max_tokens=max_tokens,
         sampler=sampler,
+        stop=_stop_tokens(tokenizer),
         verbose=verbose,
     )
 
     del model
     mx.clear_cache()
-    return _clean_response(response)
+    return response.strip()
 
 
 def main():
