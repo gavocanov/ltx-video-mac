@@ -261,8 +261,8 @@ class LTXBridge {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"") ?? ""
         
-        // Log file path
-        let logFile = "/tmp/ltx_generation.log"
+        // Log file path: same folder and base name as the output video, .log extension.
+        let logFile = (outputPath as NSString).deletingPathExtension + ".log"
         
         // Ensure dimensions are divisible by 64 for MLX
         let genWidth = (params.width / 64) * 64
@@ -598,7 +598,8 @@ except Exception as e:
                 script: script,
                 timeout: 3600,
                 generationDiagnostics: (modelRepo: modelRepo, textEncoderRepo: textEncoderRepo),
-                originalVaeTilingMode: request.parameters.vaeTilingMode
+                originalVaeTilingMode: request.parameters.vaeTilingMode,
+                logFile: logFile
             ) { stderrChunk in
             // Build complete logical lines from chunked stderr reads so STAGE/STATUS tokens
             // are never dropped when a token is split across read boundaries.
@@ -786,9 +787,14 @@ except Exception as e:
                         }
                     } else if cleanLine.hasPrefix("DOWNLOAD:COMPLETE:") {
                         progressHandler(0.08, "Model download complete")
+                    } else if cleanLine.hasPrefix("PREVIEW:ENABLED:") {
+                        print("[LTXBridge] \(cleanLine)")
+                    } else if cleanLine.hasPrefix("PREVIEW:WRITE:") {
+                        print("[LTXBridge] \(cleanLine)")
                     } else if cleanLine.hasPrefix("PREVIEW:") {
                         let path = String(cleanLine.dropFirst("PREVIEW:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
                         if !path.isEmpty {
+                            print("[LTXBridge] preview frame: \(path)")
                             previewHandler?(path)
                         }
                     } else if cleanLine.contains("Downloading") || cleanLine.contains("Fetching") {
@@ -976,13 +982,14 @@ except Exception as e:
         timeout: TimeInterval = 60,
         generationDiagnostics: (modelRepo: String, textEncoderRepo: String)? = nil,
         originalVaeTilingMode: String? = nil,
+        logFile: String = "/tmp/ltx_generation.log",
         stderrHandler: ((String) -> Void)? = nil
     ) async throws -> String {
         guard let python = pythonExecutable else {
             throw LTXError.pythonNotConfigured
         }
-        
-        let logFile = "/tmp/ltx_generation.log"
+
+        let logFile = logFile
         
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {

@@ -918,6 +918,7 @@ def _write_preview_frame(
 
         cv2.imwrite(path, cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
         print(f"PREVIEW:{path}", file=sys.stderr, flush=True)
+        print(f"PREVIEW:WRITE:{tag}:{os.path.getsize(path)}", file=sys.stderr, flush=True)
         return path
     except Exception as e:
         print(f"PREVIEW_ERROR:{e}", file=sys.stderr, flush=True)
@@ -1722,6 +1723,11 @@ def generate_video_with_audio(
         ),
         timestep_conditioning=None,
         use_unified=use_unified and (vae_model_path == model_path),
+    )
+    print(
+        f"PREVIEW:ENABLED:every={preview_every}:dir={preview_dir}",
+        file=sys.stderr,
+        flush=True,
     )
 
     # Stage 1 denoising

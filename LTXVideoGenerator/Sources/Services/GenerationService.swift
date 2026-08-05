@@ -193,8 +193,12 @@ class GenerationService: ObservableObject {
                     self?.statusMessage = message
                 }
             } previewHandler: { [weak self] path in
-                guard let image = NSImage(contentsOfFile: path) else { return }
+                guard let image = NSImage(contentsOfFile: path) else {
+                    print("[GenerationService] preview load FAILED for \(path)")
+                    return
+                }
                 DispatchQueue.main.async {
+                    print("[GenerationService] setting previewImage from \(path)")
                     self?.previewImage = image
                 }
             }
