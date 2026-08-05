@@ -89,8 +89,6 @@ struct ContentView: View {
                 ModelStatusView()
                     .padding()
                 Divider()
-                LatentPreviewView()
-                    .padding()
             }
         }
         .frame(width: 320)
@@ -273,6 +271,15 @@ struct ModelStatusView: View {
 struct LatentPreviewView: View {
     @EnvironmentObject var generationService: GenerationService
     @AppStorage("previewEvery") private var previewEvery = 3
+    let parameters: GenerationParameters
+
+    /// Cap the preview to the input video's resolution (width/height): it never
+    /// renders larger than the requested size, and shrinks to fit if the
+    /// available space is smaller. Retains aspect ratio.
+    private var targetSize: CGSize {
+        guard parameters.width > 0, parameters.height > 0 else { return CGSize(width: 1280, height: 720) }
+        return CGSize(width: CGFloat(parameters.width), height: CGFloat(parameters.height))
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -295,10 +302,13 @@ struct LatentPreviewView: View {
             // Preview image (or placeholder while generating).
             Group {
                 if let image = generationService.previewImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity)
+                    ZStack {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: targetSize.width, maxHeight: targetSize.height)
                 } else if generationService.isProcessing {
                     ZStack {
                         RoundedRectangle(cornerRadius: 8)
@@ -445,6 +455,9 @@ struct GenerateView: View {
                 )
                 TipsView()
                     .padding()
+                LatentPreviewView(parameters: parameters)
+                    .padding(.horizontal)
+                    .padding(.bottom)
             }
             .frame(maxWidth: .infinity)
         }
