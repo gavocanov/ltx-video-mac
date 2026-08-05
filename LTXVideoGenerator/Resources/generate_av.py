@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import struct
 import sys
 import tempfile
 import time
@@ -1248,11 +1249,34 @@ def load_and_merge_lora(
     print(f"{Colors.BLUE}🎛️  Loading LoRA: {path.name} (strength={strength}){Colors.RESET}")
 
     # Collect all lora_A / lora_B tensors from the safetensors file.
+    # numpy cannot represent bfloat16 ("data type 'bfloat16' not understood"),
+    # and safetensors' mlx backend is broken in some versions, so we read
+    # bfloat16 tensors from raw bytes and reinterpret them as MLX bfloat16.
+    def _load_tensor(f, key: str):
+        try:
+            return f.get_tensor(key)
+        except TypeError:
+            pass  # bfloat16 -> numpy failure; fall through to raw read
+        info = f.get_slice(key)
+        dtype = info.get_dtype()
+        shape = info.get_shape()
+        if dtype != "BF16":
+            raise
+        # Re-read raw bytes for this tensor from the file.
+        with open(path, "rb") as rf:
+            n = struct.unpack("<Q", rf.read(8))[0]
+            header = json.loads(rf.read(n))
+            start, end = header[key]["data_offsets"]
+            rf.seek(8 + n + start)
+            raw = rf.read(end - start)
+        u16 = np.frombuffer(raw, dtype="<u2").reshape(shape)
+        return mx.array(u16).view(mx.bfloat16)
+
     loras = {}
     with safe_open(str(path), framework="numpy") as f:
         for key in f.keys():
             if "lora_A" in key or "lora_B" in key:
-                loras[key] = f.get_tensor(key)
+                loras[key] = _load_tensor(f, key)
 
     if not loras:
         raise ValueError(f"No LoRA tensors found in {path.name}")
@@ -1305,7 +1329,10 @@ def load_and_merge_lora(
             a_mx = mx.array(a)
             b_mx = mx.array(b)
             delta = (b_mx @ a_mx) * strength
-            param = param + delta.astype(param.dtype)
+            # Cast to a concrete MLX dtype; passing param.dtype (an MLX Dtype
+            # object) to .astype() leaks into numpy and fails on bfloat16.
+            target_dtype = mx.bfloat16 if param.dtype == mx.bfloat16 else mx.float32
+            param = param + delta.astype(target_dtype)
             merged += 1
         except (AttributeError, IndexError, TypeError):
             continue
