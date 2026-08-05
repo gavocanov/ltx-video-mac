@@ -1419,17 +1419,69 @@ def load_and_merge_lora(
         elif key.endswith("lora_B") or key.endswith("lora_B.weight"):
             pairs.setdefault(target, [None, None])[1] = tensor
 
+    # Collect every leaf parameter path in the model so we can match LoRA
+    # targets by suffix regardless of the prefix convention used in the file.
+    def _leaf_paths(obj, prefix=""):
+        out = []
+        if isinstance(obj, mx.array):
+            out.append(prefix)
+            return out
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                out.extend(_leaf_paths(v, f"{prefix}.{k}" if prefix else str(k)))
+            return out
+        for name in dir(obj):
+            if name.startswith("_"):
+                continue
+            try:
+                child = getattr(obj, name)
+            except Exception:
+                continue
+            if isinstance(child, (mx.array, dict)) or hasattr(child, "__dict__") or hasattr(child, "children"):
+                out.extend(_leaf_paths(child, f"{prefix}.{name}" if prefix else name))
+        return out
+
+    leaf_paths = _leaf_paths(model)
+
     merged = 0
     for target, (a, b) in pairs.items():
         if a is None or b is None:
             continue
         try:
+            # Resolve the target path; fall back to suffix matching against the
+            # model's real leaf paths when the stripped name doesn't resolve.
             param = model
+            resolved = True
             for part in target.split("."):
                 if part.isdigit():
-                    param = param[int(part)]
+                    try:
+                        param = param[int(part)]
+                    except (IndexError, KeyError, TypeError):
+                        resolved = False
+                        break
                 else:
-                    param = getattr(param, part)
+                    try:
+                        param = getattr(param, part)
+                    except AttributeError:
+                        resolved = False
+                        break
+            if not resolved or not isinstance(param, mx.array):
+                # Suffix fallback: find a real leaf path ending with this target
+                # (ignoring the trailing .weight/.bias on the model side).
+                match = None
+                for p in leaf_paths:
+                    base = re.sub(r"\.(weight|bias)$", "", p)
+                    if base.endswith("." + target) or base == target:
+                        match = p
+                        break
+                if match is None:
+                    continue
+                param = model
+                for part in match.split("."):
+                    if part.isdigit():
+                        param = param[int(part)]
+                    else:
+                        param = getattr(param, part)
             if not isinstance(param, mx.array):
                 continue
             a_mx = mx.array(a)
