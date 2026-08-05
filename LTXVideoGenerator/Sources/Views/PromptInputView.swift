@@ -48,6 +48,7 @@ struct PromptInputView: View {
     @State private var isPreviewing = false
     @State private var previewError: String?
     @State private var previewStatusMessage = ""
+    @State private var showEmptyEnhancementAlert = false
     @State private var showMemoryRiskAlert = false
     @State private var dismissedHeavyEncoderComboHint = false
     @State private var pendingQueueAction: PendingQueueAction?
@@ -712,6 +713,11 @@ struct PromptInputView: View {
                 onSave: saveCurrentCharacterProfile
             )
         }
+        .alert("Enhancement returned no output", isPresented: $showEmptyEnhancementAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The AI produced an empty result (this can happen when the output is filtered). Try rephrasing your prompt and running Enhance again.")
+        }
         .onAppear {
             if !storedImagePath.isEmpty && sourceImageThumbnail == nil {
                 let url = URL(fileURLWithPath: storedImagePath)
@@ -759,8 +765,13 @@ struct PromptInputView: View {
                 DispatchQueue.main.async { previewStatusMessage = status }
             }
             await MainActor.run {
-                enhancedPreview = enhanced
-                showEnhancedPreview = true
+                if let enhanced, !enhanced.isEmpty {
+                    enhancedPreview = enhanced
+                    showEnhancedPreview = true
+                } else {
+                    // LLM returned no output (e.g. safety filter) - explain via alert.
+                    showEmptyEnhancementAlert = true
+                }
             }
         } catch {
             await MainActor.run {
@@ -1037,6 +1048,9 @@ private struct EnhancedPreviewSheet: View {
                 .frame(minHeight: 160)
                 .onAppear {
                     editedText = displayText
+                }
+                .onChange(of: enhancedPrompt) { _, newValue in
+                    editedText = newValue.isEmpty ? originalPrompt : newValue
                 }
             HStack {
                 Button("Dismiss") { onDismiss() }
