@@ -51,18 +51,12 @@ struct ContentView: View {
             idealHeight: 800,
             maxHeight: .infinity
         )
-        .alert("Error", isPresented: $showError, presenting: generationService.error) { _ in
-            Button("OK", role: .cancel) {
-                generationService.clearError()
+        .sheet(isPresented: $showError) {
+            if let error = generationService.error {
+                ErrorLogSheet(error: error) {
+                    generationService.clearError()
+                }
             }
-        } message: { error in
-            ScrollView(.vertical) {
-                Text(error.localizedDescription)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 400)
         }
         .onChange(of: generationService.error) { _, newError in
             showError = newError != nil
@@ -511,5 +505,41 @@ struct TipsView: View {
             Image(systemName: "arrow.right.circle")
         }
         .buttonStyle(.borderless)
+    }
+}
+
+/// Presents the full generation log in a scrollable sheet. A plain `.alert`
+/// cannot scroll its message, so we use a sheet with a fixed-height scroll view.
+private struct ErrorLogSheet: View {
+    let error: LTXError
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Generation failed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.headline)
+                    .foregroundStyle(.red)
+                Spacer()
+                Button("Copy Log") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(error.localizedDescription, forType: .string)
+                }
+                Button("OK") { onDismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            ScrollView(.vertical) {
+                Text(error.localizedDescription)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 400)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .padding(16)
+        .frame(width: 720, height: 520)
     }
 }
