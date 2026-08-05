@@ -298,9 +298,9 @@ struct LatentPreviewView: View {
             .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            // Cadence control: emit a preview every N denoise steps.
+            // Cadence control: how many frames are decoded per preview (contact sheet).
             HStack(spacing: 6) {
-                Text("Every")
+                Text("Frames")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Picker("", selection: $previewEvery) {
@@ -311,7 +311,7 @@ struct LatentPreviewView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: 120)
-                Text("steps")
+                Text("per preview")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

@@ -862,18 +862,16 @@ def denoise_av(
                 audio_latents = audio_denoised
         mx.eval(video_latents, audio_latents)
 
-        # Emit a latent preview frame every N steps (best-effort; never fatal).
-        if (
-            preview_every > 0
-            and vae_decoder is not None
-            and preview_dir
-            and (i + 1) % preview_every == 0
-        ):
+        # Emit a latent preview every denoise step. The cadence value controls
+        # how many frames are decoded per preview (contact sheet), not the step
+        # interval — so even the fixed 11-step schedule yields rich previews.
+        if preview_every > 0 and vae_decoder is not None and preview_dir:
             _write_preview_frame(
                 vae_decoder,
                 video_latents,
                 preview_dir,
                 f"s{stage}_step{i + 1}",
+                num_frames=preview_every,
             )
 
     return video_latents, audio_latents
@@ -884,40 +882,57 @@ def _write_preview_frame(
     video_latents: mx.array,
     preview_dir: str,
     tag: str,
+    num_frames: int = 1,
     max_size: int = 256,
 ) -> Optional[str]:
-    """Decode a single middle latent frame through the VAE and write a small JPEG.
+    """Decode several latent frames through the VAE and write a small JPEG contact sheet.
+
+    `num_frames` frames are sampled evenly across the video timeline and laid out
+    left-to-right so one preview shows the whole video's evolution at this step.
 
     Returns the written path, or None on any failure (previews are best-effort
     and must never break generation).
     """
     try:
-        # video_latents: (B, C, F, H, W). Decode just the middle frame.
-        mid = video_latents.shape[2] // 2
-        frame = video_latents[:, :, mid : mid + 1]
-        decoded = vae_decoder(frame)
-        mx.eval(decoded)
-        # (B, 3, 1, H', W') -> (H', W', 3)
-        img = mx.squeeze(decoded, axis=0)   # (3, 1, H', W')
-        img = mx.squeeze(img, axis=1)       # (1, H', W')  drop the single-frame dim
-        img = mx.transpose(img, (1, 2, 0))  # (H', W', 3)
-        img = mx.clip((img + 1.0) / 2.0, 0.0, 1.0)
-        img = (img * 255).astype(mx.uint8)
-        arr = np.array(img)
+        import cv2
 
-        h, w = arr.shape[0], arr.shape[1]
+        # video_latents: (B, C, F, H, W). Sample num_frames evenly across time.
+        total_frames = video_latents.shape[2]
+        n = max(1, min(num_frames, total_frames))
+        indices = [int(round(i * (total_frames - 1) / max(1, n - 1))) for i in range(n)]
+        if n == 1:
+            indices = [total_frames // 2]
+
+        tiles = []
+        for fi in indices:
+            frame = video_latents[:, :, fi : fi + 1]
+            decoded = vae_decoder(frame)
+            mx.eval(decoded)
+            # (B, 3, 1, H', W') -> (H', W', 3)
+            img = mx.squeeze(decoded, axis=0)   # (3, 1, H', W')
+            img = mx.squeeze(img, axis=1)       # (1, H', W')  drop the single-frame dim
+            img = mx.transpose(img, (1, 2, 0))  # (H', W', 3)
+            img = mx.clip((img + 1.0) / 2.0, 0.0, 1.0)
+            img = (img * 255).astype(mx.uint8)
+            tiles.append(np.array(img))
+
+        h, w = tiles[0].shape[0], tiles[0].shape[1]
         if max(h, w) > max_size:
             scale = max_size / float(max(h, w))
             new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
-            import cv2
+            tiles = [cv2.resize(t, (new_w, new_h), interpolation=cv2.INTER_AREA) for t in tiles]
+            h, w = new_h, new_w
 
-            arr = cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        # Horizontal contact sheet with thin separators.
+        gap = 2
+        sheet = np.full((h, w * n + gap * (n - 1), 3), 255, dtype=np.uint8)
+        for i, t in enumerate(tiles):
+            x0 = i * (w + gap)
+            sheet[:, x0 : x0 + w] = t
 
         os.makedirs(preview_dir, exist_ok=True)
         path = os.path.join(preview_dir, f"preview_{tag}.jpg")
-        import cv2
-
-        cv2.imwrite(path, cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(path, cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
         print(f"PREVIEW:{path}", file=sys.stderr, flush=True)
         print(f"PREVIEW:WRITE:{tag}:{os.path.getsize(path)}", file=sys.stderr, flush=True)
         return path
