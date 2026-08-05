@@ -18,11 +18,9 @@ class PresetManager: ObservableObject {
     
     func loadInitialData() {
         loadPresets()
-        
-        // Select default preset
-        if selectedPreset == nil {
-            selectedPreset = presets.first
-        }
+        // Do NOT auto-select a preset here. Auto-applying the first built-in
+        // preset ("Quick Preview") on every launch overwrites the user's saved
+        // slider values. Presets only apply when the user explicitly picks one.
     }
     
     // MARK: - Persistence

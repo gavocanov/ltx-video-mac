@@ -17,6 +17,19 @@ struct ContentView: View {
     @State private var parameters: GenerationParameters = SessionSettings.loadParameters()
     @State private var showError = false
 
+    /// Single source of truth for parameter writes: every assignment persists
+    /// immediately, so slider drags / buttons / presets are never lost even if
+    /// SwiftUI's onChange misses a continuous update.
+    private var savingParameters: Binding<GenerationParameters> {
+        Binding(
+            get: { parameters },
+            set: { newValue in
+                parameters = newValue
+                SessionSettings.saveParameters(newValue)
+            }
+        )
+    }
+
     enum Tab: String, CaseIterable {
         case generate = "Generate"
         case history = "Video Archive"
@@ -108,7 +121,7 @@ struct ContentView: View {
                 prompt: $prompt,
                 negativePrompt: $negativePrompt,
                 voiceoverText: $voiceoverText,
-                parameters: $parameters
+                parameters: savingParameters
             )
         case .history:
             HistoryView()
@@ -306,9 +319,10 @@ struct LatentPreviewView: View {
             .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            // Cadence control: how many frames are decoded per preview (contact sheet).
+            // Cadence control: emit every Nth frame live (1 = every frame,
+            // 3 = every 3rd, 10 = every 10th).
             HStack(spacing: 6) {
-                Text("Frames")
+                Text("Cadence")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Picker("", selection: $previewEvery) {
@@ -319,7 +333,7 @@ struct LatentPreviewView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .frame(width: 120)
-                Text("per preview")
+                Text("every Nth frame")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

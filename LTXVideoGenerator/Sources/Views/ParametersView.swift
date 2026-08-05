@@ -10,15 +10,15 @@ struct ParametersView: View {
     @State private var newPresetName = ""
     @State private var availableVRAM = getAvailableVRAM()
 
-    /// Binding that persists parameters on every write, so slider changes are
-    /// saved immediately without relying on SwiftUI's onChange (which can miss
-    /// continuous drag updates).
-    private var savingParameters: Binding<GenerationParameters> {
+    /// Int-typed slider binding that persists through the parent's saving binding
+    /// on every write (assigning back through the setter triggers save).
+    private func intSliderBinding(_ keyPath: WritableKeyPath<GenerationParameters, Int>) -> Binding<Double> {
         Binding(
-            get: { parameters },
+            get: { Double(parameters[keyPath: keyPath]) },
             set: { newValue in
-                parameters = newValue
-                SessionSettings.saveParameters(newValue)
+                var updated = parameters
+                updated[keyPath: keyPath] = Int(newValue)
+                parameters = updated
             }
         )
     }
@@ -39,6 +39,7 @@ struct ParametersView: View {
                 
                 HStack {
                     Picker("", selection: $presetManager.selectedPreset) {
+                        Text("Custom").tag(Preset?.none)
                         ForEach(presetManager.presets) { preset in
                             Text(preset.name).tag(preset as Preset?)
                         }
@@ -100,10 +101,7 @@ struct ParametersView: View {
                     // Inference steps
                     ParameterSlider(
                         title: "Inference Steps",
-                        value: Binding(
-                            get: { Double(parameters.numInferenceSteps) },
-                            set: { parameters.numInferenceSteps = Int($0) }
-                        ),
+                        value: intSliderBinding(\.numInferenceSteps),
                         range: 10...100,
                         step: 5,
                         icon: "arrow.triangle.2.circlepath"
@@ -122,7 +120,7 @@ struct ParametersView: View {
                     // Guidance scale
                     ParameterSlider(
                         title: "Guidance Scale",
-                        value: savingParameters.guidanceScale,
+                        value: $parameters.guidanceScale,
                         range: 1...15,
                         step: 0.5,
                         icon: "dial.medium",
@@ -139,7 +137,7 @@ struct ParametersView: View {
 
                         ResolutionSlider(
                             title: "Width",
-                            value: savingParameters.width,
+                            value: $parameters.width,
                             range: 256...2560,
                             step: 64,
                             icon: "arrow.left.and.right"
@@ -147,7 +145,7 @@ struct ParametersView: View {
 
                         ResolutionSlider(
                             title: "Height",
-                            value: savingParameters.height,
+                            value: $parameters.height,
                             range: 256...2560,
                             step: 64,
                             icon: "arrow.up.and.down"
@@ -187,10 +185,7 @@ struct ParametersView: View {
                     // Frame count
                     ParameterSlider(
                         title: "Frames",
-                        value: Binding(
-                            get: { Double(parameters.numFrames) },
-                            set: { savingParameters.wrappedValue.numFrames = Int($0) }
-                        ),
+                        value: intSliderBinding(\.numFrames),
                         range: 25...1000,
                         step: 25,
                         icon: "film.stack"
@@ -212,7 +207,7 @@ struct ParametersView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         
-                        Picker("", selection: savingParameters.fps) {
+                        Picker("", selection: $parameters.fps) {
                             Text("12 fps").tag(12)
                             Text("20 fps").tag(20)
                             Text("24 fps").tag(24)
@@ -252,21 +247,25 @@ struct ParametersView: View {
                             .foregroundStyle(.secondary)
                         
                         HStack {
-                            TextField("Random", value: savingParameters.seed, format: .number)
+                            TextField("Random", value: $parameters.seed, format: .number)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(width: 120)
                             
                             Button {
-                                parameters.seed = Int.random(in: 0..<Int(Int32.max))
+                                var updated = parameters
+                                updated.seed = Int.random(in: 0..<Int(Int32.max))
+                                parameters = updated
                             } label: {
                                 Image(systemName: "dice.fill")
                             }
                             .buttonStyle(.borderless)
                             .help("Generate random seed")
-                            
+
                             if parameters.seed != nil {
                                 Button {
-                                    parameters.seed = nil
+                                    var updated = parameters
+                                    updated.seed = nil
+                                    parameters = updated
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                 }
@@ -284,7 +283,7 @@ struct ParametersView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         
-                        Picker("", selection: savingParameters.vaeTilingMode) {
+                        Picker("", selection: $parameters.vaeTilingMode) {
                             Text("Auto").tag("auto")
                             Text("None").tag("none")
                             Text("Default").tag("default")

@@ -862,9 +862,9 @@ def denoise_av(
                 audio_latents = audio_denoised
         mx.eval(video_latents, audio_latents)
 
-        # Emit a latent preview every denoise step. The cadence value controls
-        # how many frames are decoded per preview (contact sheet), not the step
-        # interval — so even the fixed 11-step schedule yields rich previews.
+        # Emit a latent preview at the end of each denoise step: decode all
+        # cadence frames (1 = every frame, 3 = every 3rd, 10 = every 10th) and
+        # send them to the UI.
         if preview_every > 0 and vae_decoder is not None and preview_dir:
             _write_preview_frame(
                 vae_decoder,
@@ -885,70 +885,56 @@ def _write_preview_frame(
     num_frames: int = 1,
     max_size: int = 256,
 ) -> Optional[str]:
-    """Decode several latent frames through the VAE and write a small JPEG contact sheet.
+    """Decode all cadence frames through the VAE and emit each as a preview.
 
-    `num_frames` frames are sampled evenly across the video timeline and laid out
-    left-to-right so one preview shows the whole video's evolution at this step.
+    `num_frames` is the cadence: 1 = every frame, 3 = every 3rd, 10 = every 10th.
+    Each decoded frame is written as its own JPEG and announced via
+    `PREVIEW:<path>`, so the UI shows every frame of this step's latent state.
 
-    Returns the written path, or None on any failure (previews are best-effort
-    and must never break generation).
+    Returns the last written path, or None on any failure (previews are
+    best-effort and must never break generation).
     """
     try:
         import cv2
+        import time as _time
 
         # video_latents: (B, C, F, H, W).
         total_frames = video_latents.shape[2]
-        if num_frames <= 1:
-            # Cadence 1 = show EVERY frame in the latent at this step.
-            indices = list(range(total_frames))
-        else:
-            # Otherwise sample num_frames evenly across time.
-            n = min(num_frames, total_frames)
-            indices = [int(round(i * (total_frames - 1) / max(1, n - 1))) for i in range(n)]
+        step = max(1, num_frames)
+        indices = list(range(0, total_frames, step))
 
-        tiles = []
+        os.makedirs(preview_dir, exist_ok=True)
+        last_path = None
         for fi in indices:
             frame = video_latents[:, :, fi : fi + 1]
+            _td = _time.perf_counter()
             decoded = vae_decoder(frame)
             mx.eval(decoded)
+            _decode_ms = (_time.perf_counter() - _td) * 1000.0
             # (B, 3, 1, H', W') -> (H', W', 3)
             img = mx.squeeze(decoded, axis=0)   # (3, 1, H', W')
             img = mx.squeeze(img, axis=1)       # (1, H', W')  drop the single-frame dim
             img = mx.transpose(img, (1, 2, 0))  # (H', W', 3)
             img = mx.clip((img + 1.0) / 2.0, 0.0, 1.0)
             img = (img * 255).astype(mx.uint8)
-            tiles.append(np.array(img))
+            arr = np.array(img)
 
-        h, w = tiles[0].shape[0], tiles[0].shape[1]
-        if max(h, w) > max_size:
-            scale = max_size / float(max(h, w))
-            new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
-            tiles = [cv2.resize(t, (new_w, new_h), interpolation=cv2.INTER_AREA) for t in tiles]
-            h, w = new_h, new_w
+            h, w = arr.shape[0], arr.shape[1]
+            if max(h, w) > max_size:
+                scale = max_size / float(max(h, w))
+                new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+                arr = cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Grid contact sheet: cap tiles per row so the image isn't absurdly wide
-        # (which would render 1-2px tall when fit to the sidebar width).
-        gap = 2
-        count = len(indices)
-        cols = min(count, 8)
-        rows = (count + cols - 1) // cols
-        sheet = np.full(
-            (h * rows + gap * (rows - 1), w * cols + gap * (cols - 1), 3),
-            255,
-            dtype=np.uint8,
-        )
-        for i, t in enumerate(tiles):
-            r, c = divmod(i, cols)
-            y0 = r * (h + gap)
-            x0 = c * (w + gap)
-            sheet[y0 : y0 + h, x0 : x0 + w] = t
+            path = os.path.join(preview_dir, f"preview_{tag}_f{fi}.jpg")
+            cv2.imwrite(path, cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
+            print(f"PREVIEW:{path}", file=sys.stderr, flush=True)
+            print(f"PREVIEW:DECODE:{tag}:frame{fi}:{_decode_ms:.1f}ms", file=sys.stderr, flush=True)
+            last_path = path
+            # Pace emissions to ~24fps so the dumped frames play like a video
+            # instead of all arriving at once.
+            _time.sleep(max(0.0, (1.0 / 24.0) - (_decode_ms / 1000.0)))
 
-        os.makedirs(preview_dir, exist_ok=True)
-        path = os.path.join(preview_dir, f"preview_{tag}.jpg")
-        cv2.imwrite(path, cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
-        print(f"PREVIEW:{path}", file=sys.stderr, flush=True)
-        print(f"PREVIEW:WRITE:{tag}:{os.path.getsize(path)}", file=sys.stderr, flush=True)
-        return path
+        return last_path
     except Exception as e:
         print(f"PREVIEW_ERROR:{e}", file=sys.stderr, flush=True)
         return None
