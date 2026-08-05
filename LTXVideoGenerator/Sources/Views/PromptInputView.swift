@@ -17,6 +17,7 @@ struct PromptInputView: View {
     @State private var showImageToVideo = false
     @AppStorage("sourceImagePath") private var storedImagePath = ""
     @State private var sourceImageThumbnail: NSImage?
+    @State private var sourceImageOriginalSize: NSSize = .zero
     @State private var showCompletedIndicator = false
     @FocusState private var isPromptFocused: Bool
     
@@ -267,8 +268,8 @@ struct PromptInputView: View {
                         HStack(spacing: 12) {
                             Image(nsImage: thumbnail)
                                 .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 80, height: 80)
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 160, height: 160)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
@@ -281,7 +282,7 @@ struct PromptInputView: View {
                                     .fontWeight(.medium)
                                     .lineLimit(1)
                                 
-                                Text("\(Int(thumbnail.size.width))x\(Int(thumbnail.size.height))")
+                                Text("\(Int(sourceImageOriginalSize.width))x\(Int(sourceImageOriginalSize.height))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 
@@ -935,7 +936,8 @@ struct PromptInputView: View {
     
     private func loadThumbnail(from url: URL) {
         if let image = NSImage(contentsOf: url) {
-            // Create a smaller thumbnail for display
+            sourceImageOriginalSize = image.size
+            // Create a smaller thumbnail for display, preserving aspect ratio
             let maxSize: CGFloat = 160
             let aspectRatio = image.size.width / image.size.height
             
