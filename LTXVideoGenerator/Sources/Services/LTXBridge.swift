@@ -388,6 +388,29 @@ try:
     
     log("Starting generation...")
     log(f"Command: {' '.join(cmd)}")
+
+    # Pre-download model + text encoder so mlx_video.generate_av finds them cached
+    # and we can report real progress instead of silent downloads.
+    try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+        # Suppress huggingface_hub's own tqdm bars; we emit our own progress lines.
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+        for repo, label in ((model_repo, "model"), (text_encoder_repo, "text encoder")):
+            print(f"DOWNLOAD:START:{repo}", file=sys.stderr, flush=True)
+            files = list_repo_files(repo)
+            total = len(files)
+            for idx, filename in enumerate(files, start=1):
+                print(
+                    f"DOWNLOAD:PROGRESS:{idx}:{total}:{filename}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                hf_hub_download(repo_id=repo, filename=filename)
+            print(f"DOWNLOAD:COMPLETE:{repo}", file=sys.stderr, flush=True)
+    except Exception as e:
+        log(f"Pre-download failed (will rely on lazy download): {e}")
+
     child_env = os.environ.copy()
     # Drop inherited PYTHONPATH so venv site-packages wins unless we explicitly use a local checkout.
     child_env.pop("PYTHONPATH", None)
@@ -669,12 +692,18 @@ except Exception as e:
                             let mappedProgress: Double
                             let message: String
                             
-                            if stage == 1 {
+                            if stage == 0 {
+                                // Download phase: map file index/total into 0.01...0.08
+                                mappedProgress = 0.01 + (stageProgress * 0.07)
+                                message = parts.count > 5
+                                    ? String(parts[5...].joined(separator: ":"))
+                                    : "Downloading model files (\\(step)/\\(total))"
+                            } else if stage == 1 {
                                 mappedProgress = 0.1 + (stageProgress * 0.4)
-                                message = "Stage 1 (\(step)/\(total)): Generating at half resolution"
+                                message = "Stage 1 (\\(step)/\\(total)): Generating at half resolution"
                             } else {
                                 mappedProgress = 0.5 + (stageProgress * 0.4)
-                                message = "Stage 2 (\(step)/\(total)): Refining at full resolution"
+                                message = "Stage 2 (\\(step)/\\(total)): Refining at full resolution"
                             }
                             progressHandler(mappedProgress, message)
                         }
@@ -721,14 +750,12 @@ except Exception as e:
                     } else if cleanLine.hasPrefix("DOWNLOAD:PROGRESS:") {
                         let parts = cleanLine.dropFirst(18).split(separator: ":")
                         if parts.count >= 3 {
-                            let currentBytes = Double(parts[0]) ?? 0
-                            let totalBytes = Double(parts[1]) ?? 1
-                            let pctStr = String(parts[2]).replacingOccurrences(of: "%", with: "")
-                            let pct = Int(pctStr) ?? 0
-                            let currentGB = currentBytes / 1_000_000_000
-                            let totalGB = totalBytes / 1_000_000_000
-                            let mappedProgress = 0.01 + (Double(pct) / 100.0 * 0.07)
-                            progressHandler(mappedProgress, String(format: "Downloading: %.1fGB / %.1fGB (%d%%)", currentGB, totalGB, pct))
+                            let currentFile = Int(parts[0]) ?? 0
+                            let totalFiles = Int(parts[1]) ?? 1
+                            let filename = String(parts[2...].joined(separator: ":"))
+                            let pct = totalFiles > 0 ? Double(currentFile) / Double(totalFiles) : 0
+                            let mappedProgress = 0.01 + (pct * 0.07)
+                            progressHandler(mappedProgress, "Downloading (\(currentFile)/\(totalFiles)): \(filename)")
                         }
                     } else if cleanLine.hasPrefix("DOWNLOAD:COMPLETE:") {
                         progressHandler(0.08, "Model download complete")
