@@ -691,6 +691,7 @@ struct PromptInputView: View {
                 enhancedPrompt: enhancedPreview ?? "",
                 originalPrompt: prompt,
                 error: previewError,
+                isPreviewing: isPreviewing,
                 onDismiss: {
                     showEnhancedPreview = false
                     enhancedPreview = nil
@@ -1011,6 +1012,7 @@ private struct EnhancedPreviewSheet: View {
     let enhancedPrompt: String
     let originalPrompt: String
     let error: String?
+    let isPreviewing: Bool
     let onDismiss: () -> Void
     let onRepeat: () -> Void
     let onAccept: (String) -> Void
@@ -1060,10 +1062,18 @@ private struct EnhancedPreviewSheet: View {
                 Button("Dismiss") { onDismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Repeat") { onRepeat() }
-                Button("Accept") { onAccept(editedText) }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
+                if isPreviewing {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Enhancing...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Repeat") { onRepeat() }
+                    Button("Accept") { onAccept(editedText) }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
             }
         }
         .padding(24)
