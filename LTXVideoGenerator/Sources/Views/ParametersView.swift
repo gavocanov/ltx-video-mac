@@ -127,7 +127,7 @@ struct ParametersView: View {
                         ResolutionSlider(
                             title: "Width",
                             value: $parameters.width,
-                            range: 264...2560,
+                            range: 256...2560,
                             step: 64,
                             icon: "arrow.left.and.right"
                         )
@@ -135,7 +135,7 @@ struct ParametersView: View {
                         ResolutionSlider(
                             title: "Height",
                             value: $parameters.height,
-                            range: 264...2560,
+                            range: 256...2560,
                             step: 64,
                             icon: "arrow.up.and.down"
                         )
@@ -453,11 +453,20 @@ struct AspectPreview: View {
 
 private func aspectRatioText(width: Int, height: Int) -> String {
     guard width > 0, height > 0 else { return "" }
+    let ratio = Double(width) / Double(height)
+    // Common aspect ratios (w:h)
+    let common: [(String, Double)] = [
+        ("21:9", 21.0 / 9.0), ("16:9", 16.0 / 9.0), ("3:2", 3.0 / 2.0),
+        ("4:3", 4.0 / 3.0), ("1:1", 1.0), ("3:4", 3.0 / 4.0),
+        ("2:3", 2.0 / 3.0), ("9:16", 9.0 / 16.0), ("9:21", 9.0 / 21.0)
+    ]
+    if let best = common.min(by: { abs($0.1 - ratio) < abs($1.1 - ratio) }),
+       abs(best.1 - ratio) < 0.05 {
+        return "\(best.0) (\(String(format: "%.2f", ratio)))"
+    }
+    // Fallback: GCD reduction
     let gcd = greatestCommonDivisor(width, height)
-    let w = width / gcd
-    let h = height / gcd
-    let decimal = Double(width) / Double(height)
-    return "\(w):\(h) (\(String(format: "%.2f", decimal)))"
+    return "\(width / gcd):\(height / gcd) (\(String(format: "%.2f", ratio)))"
 }
 
 private func greatestCommonDivisor(_ a: Int, _ b: Int) -> Int {
