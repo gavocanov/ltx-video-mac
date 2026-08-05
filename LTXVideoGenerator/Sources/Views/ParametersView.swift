@@ -123,59 +123,39 @@ struct ParametersView: View {
                         Label("Resolution", systemImage: "rectangle.dashed")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        
-                        HStack(spacing: 16) {
-                            VStack(alignment: .leading) {
-                                Text("Width")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                Picker("", selection: $parameters.width) {
-                                    Text("320").tag(320)
-                                    Text("512").tag(512)
-                                    Text("640").tag(640)
-                                    Text("768").tag(768)
-                                    Text("896").tag(896)
-                                    Text("1024").tag(1024)
-                                    Text("1280").tag(1280)
-                                    Text("1536").tag(1536)
-                                    Text("1920").tag(1920)
-                                    Text("2048").tag(2048)
-                                }
-                                .labelsHidden()
-                                .frame(width: 80)
+
+                        ResolutionSlider(
+                            title: "Width",
+                            value: $parameters.width,
+                            range: 264...2560,
+                            step: 64,
+                            icon: "arrow.left.and.right"
+                        )
+
+                        ResolutionSlider(
+                            title: "Height",
+                            value: $parameters.height,
+                            range: 264...2560,
+                            step: 64,
+                            icon: "arrow.up.and.down"
+                        )
+
+                        HStack(spacing: 12) {
+                            AspectPreview(width: parameters.width, height: parameters.height)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\\(parameters.width)×\\(parameters.height)")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+
+                                Text(aspectRatioText(width: parameters.width, height: parameters.height))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
                             }
 
-                            VStack(alignment: .leading) {
-                                Text("Height")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                Picker("", selection: $parameters.height) {
-                                    Text("320").tag(320)
-                                    Text("384").tag(384)
-                                    Text("512").tag(512)
-                                    Text("576").tag(576)
-                                    Text("704").tag(704)
-                                    Text("768").tag(768)
-                                    Text("864").tag(864)
-                                    Text("1080").tag(1080)
-                                    Text("1152").tag(1152)
-                                }
-                                .labelsHidden()
-                                .frame(width: 80)
-                            }
-                            
                             Spacer()
-                            
-                            Text("\(parameters.width)×\(parameters.height)")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color(nsColor: .controlBackgroundColor))
-                                )
                         }
+                        .padding(.top, 4)
 
                         if parameters.width * parameters.height > 768 * 512 {
                             HStack(alignment: .top, spacing: 6) {
@@ -378,6 +358,117 @@ struct ParameterSlider: View {
             Slider(value: $value, in: range, step: step)
         }
     }
+}
+
+struct ResolutionSlider: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    let step: Int
+    let icon: String
+
+    @State private var editText: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                TextField("", text: $editText)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.trailing)
+                    .font(.caption.monospaced())
+                    .frame(width: 56)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .onSubmit {
+                        commitEdit()
+                    }
+                    .onChange(of: value) { _, newValue in
+                        editText = String(newValue)
+                    }
+                    .onAppear {
+                        editText = String(value)
+                    }
+            }
+
+            Slider(
+                value: Binding(
+                    get: { Double(value) },
+                    set: { value = Int($0) }
+                ),
+                in: Double(range.lowerBound)...Double(range.upperBound),
+                step: Double(step)
+            )
+        }
+    }
+
+    private func commitEdit() {
+        guard let parsed = Int(editText.trimmingCharacters(in: .whitespaces)) else {
+            editText = String(value)
+            return
+        }
+        // Clamp to range, then round down to nearest multiple of step.
+        let clamped = min(max(parsed, range.lowerBound), range.upperBound)
+        value = (clamped / step) * step
+        editText = String(value)
+    }
+}
+
+struct AspectPreview: View {
+    let width: Int
+    let height: Int
+
+    var body: some View {
+        let box: CGFloat = 120
+        let ratio = CGFloat(width) / CGFloat(height)
+        let rectWidth: CGFloat
+        let rectHeight: CGFloat
+        if ratio >= 1 {
+            rectWidth = box
+            rectHeight = box / ratio
+        } else {
+            rectWidth = box * ratio
+            rectHeight = box
+        }
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1)
+                .frame(width: box, height: box)
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color.accentColor.opacity(0.35))
+                .frame(width: rectWidth, height: rectHeight)
+        }
+    }
+}
+
+private func aspectRatioText(width: Int, height: Int) -> String {
+    guard width > 0, height > 0 else { return "" }
+    let gcd = greatestCommonDivisor(width, height)
+    let w = width / gcd
+    let h = height / gcd
+    let decimal = Double(width) / Double(height)
+    return "\(w):\(h) (\(String(format: "%.2f", decimal)))"
+}
+
+private func greatestCommonDivisor(_ a: Int, _ b: Int) -> Int {
+    var x = a
+    var y = b
+    while y != 0 {
+        let t = y
+        y = x % y
+        x = t
+    }
+    return x
 }
 
 struct SavePresetSheet: View {
