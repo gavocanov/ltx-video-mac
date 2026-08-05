@@ -56,10 +56,13 @@ struct ContentView: View {
                 generationService.clearError()
             }
         } message: { error in
-            let text = error.localizedDescription
-            Text(text.count > 500 ? String(text.prefix(500)) + "\n… (truncated)" : text)
-                .font(.caption.monospaced())
-                .textSelection(.enabled)
+            ScrollView(.vertical) {
+                Text(error.localizedDescription)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 400)
         }
         .onChange(of: generationService.error) { _, newError in
             showError = newError != nil
