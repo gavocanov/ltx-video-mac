@@ -68,19 +68,6 @@ def _apply_chat_template(tokenizer, system_prompt: str, user_content: str) -> st
     )
 
 
-def _stop_tokens(tokenizer) -> list[str]:
-    """Return stop tokens for the model's chat template (e.g. <end_of_turn>)."""
-    stops = []
-    eos = getattr(tokenizer, "eos_token", None)
-    if eos:
-        stops.append(eos)
-    # Gemma 3 uses <end_of_turn> as the turn terminator.
-    end_of_turn = "<end_of_turn>"
-    if end_of_turn not in stops:
-        stops.append(end_of_turn)
-    return stops
-
-
 def _enhance_with_mlx_lm(
     prompt: str,
     model_repo: str,
@@ -128,7 +115,6 @@ def _enhance_with_mlx_lm(
         prompt=formatted,
         max_tokens=max_tokens,
         sampler=sampler,
-        stop=_stop_tokens(tokenizer),
         verbose=verbose,
     )
 
