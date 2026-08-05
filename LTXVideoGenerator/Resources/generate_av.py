@@ -896,12 +896,15 @@ def _write_preview_frame(
     try:
         import cv2
 
-        # video_latents: (B, C, F, H, W). Sample num_frames evenly across time.
+        # video_latents: (B, C, F, H, W).
         total_frames = video_latents.shape[2]
-        n = max(1, min(num_frames, total_frames))
-        indices = [int(round(i * (total_frames - 1) / max(1, n - 1))) for i in range(n)]
-        if n == 1:
-            indices = [total_frames // 2]
+        if num_frames <= 1:
+            # Cadence 1 = show EVERY frame in the latent at this step.
+            indices = list(range(total_frames))
+        else:
+            # Otherwise sample num_frames evenly across time.
+            n = min(num_frames, total_frames)
+            indices = [int(round(i * (total_frames - 1) / max(1, n - 1))) for i in range(n)]
 
         tiles = []
         for fi in indices:
