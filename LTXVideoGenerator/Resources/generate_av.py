@@ -1898,15 +1898,6 @@ def generate_video_with_audio(
     )
     transformer = LTXModel(config)
 
-    transformer.load_weights(list(sanitized.items()), strict=False)
-    _eval_tree_in_chunks(transformer.parameters(), "TRANSFORMER")
-
-    # Apply LoRA adapter if provided. Must happen before quantization so the
-    # merged weights are plain (float32/bfloat16) arrays; merging into a
-    # quantized array is not supported.
-    if lora_path:
-        load_and_merge_lora(transformer, lora_path, strength=lora_strength)
-
     # Detect quantized model and selectively quantize layers that have quantized weights
     split_manifest = model_path / "split_model.json"
     if split_manifest.exists():
@@ -1931,6 +1922,13 @@ def generate_video_with_audio(
                 )
         except (json.JSONDecodeError, OSError):
             pass
+
+    transformer.load_weights(list(sanitized.items()), strict=False)
+    _eval_tree_in_chunks(transformer.parameters(), "TRANSFORMER")
+
+    # Apply LoRA adapter if provided.
+    if lora_path:
+        load_and_merge_lora(transformer, lora_path, strength=lora_strength)
 
     # Load VAE encoder and encode image for I2V conditioning
     stage1_image_latent = None

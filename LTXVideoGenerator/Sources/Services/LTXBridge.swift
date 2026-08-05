@@ -23,6 +23,17 @@ enum LTXError: LocalizedError, Equatable {
     }
 }
 
+/// Thread-safe holder for a running Process so cancellation can kill it.
+private final class ProcessBox {
+    private let lock = NSLock()
+    private var _process: Process?
+
+    var process: Process? {
+        get { lock.lock(); defer { lock.unlock() }; return _process }
+        set { lock.lock(); _process = newValue; lock.unlock() }
+    }
+}
+
 // Use subprocess to run MLX-based generation
 class LTXBridge {
     static let shared = LTXBridge()
@@ -581,12 +592,16 @@ class LTXBridge {
         timeout: TimeInterval = 60,
         stderrHandler: ((String) -> Void)? = nil
     ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: executable)
-                process.arguments = arguments
-                var env: [String: String] = [:]
+        // Track the running process so task cancellation can kill it.
+        let processBox = ProcessBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let process = Process()
+                    processBox.process = process
+                    process.executableURL = URL(fileURLWithPath: executable)
+                    process.arguments = arguments
+                    var env: [String: String] = [:]
                 let pythonBin = URL(fileURLWithPath: executable).deletingLastPathComponent().path
                 env["PATH"] = "\(pythonBin):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
                 env["HOME"] = ProcessInfo.processInfo.environment["HOME"] ?? ""
@@ -666,6 +681,17 @@ class LTXBridge {
                 } catch {
                     continuation.resume(throwing: LTXError.generationFailed(error.localizedDescription))
                 }
+            }
+        }
+        } onCancel: {
+            // Kill the whole process group so the Python script and its
+            // children (MLX workers) die too.
+            if let process = processBox.process, process.isRunning {
+                let pid = process.processIdentifier
+                if pid > 0 {
+                    kill(-pid, SIGKILL)
+                }
+                process.terminate()
             }
         }
     }

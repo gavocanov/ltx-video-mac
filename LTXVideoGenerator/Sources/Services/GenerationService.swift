@@ -315,7 +315,7 @@ class GenerationService: ObservableObject {
             
         } catch is CancellationError {
             queue[index].status = .cancelled
-            error = .cancelled
+            // Don't surface an error dialog for an intentional cancel.
         } catch let err as LTXError {
             queue[index].status = .failed
             error = err
