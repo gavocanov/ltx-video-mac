@@ -890,7 +890,11 @@ except Exception as e:
                 process.standardError = stderrPipe
                 do {
                     try process.run()
+                    // Put in its own process group so we can kill the whole tree on quit.
+                    setpgid(process.processIdentifier, process.processIdentifier)
+                    ProcessRegistry.shared.register(process)
                     process.waitUntilExit()
+                    ProcessRegistry.shared.unregister(process)
                     let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: outputData, encoding: .utf8) ?? ""
                     let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1004,8 +1008,12 @@ except Exception as e:
                     try? startLog.write(toFile: logFile, atomically: false, encoding: .utf8)
                     
                     try process.run()
+                    // Put in its own process group so we can kill the whole tree on quit.
+                    setpgid(process.processIdentifier, process.processIdentifier)
+                    ProcessRegistry.shared.register(process)
                     process.waitUntilExit()
-                    
+                    ProcessRegistry.shared.unregister(process)
+
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
                     
                     let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()

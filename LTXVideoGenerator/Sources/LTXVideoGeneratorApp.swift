@@ -2,12 +2,13 @@ import SwiftUI
 
 @main
 struct LTXVideoGeneratorApp: App {
-    
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     init() {
         // Don't configure Python here - defer until after subprocess validation
         // This prevents crashes from PythonKit trying to load invalid Python
     }
-    
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -174,5 +175,18 @@ struct RootView: View {
 struct SettingsRootView: View {
     var body: some View {
         PreferencesView()
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Kill any in-flight Python processes (e.g. model downloads) so they don't hang.
+        ProcessRegistry.shared.terminateAll()
+        return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Always fires on quit - ensure no Python process is left behind.
+        ProcessRegistry.shared.terminateAll()
     }
 }
