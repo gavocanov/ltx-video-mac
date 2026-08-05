@@ -10,6 +10,19 @@ struct ParametersView: View {
     @State private var newPresetName = ""
     @State private var availableVRAM = getAvailableVRAM()
 
+    /// Binding that persists parameters on every write, so slider changes are
+    /// saved immediately without relying on SwiftUI's onChange (which can miss
+    /// continuous drag updates).
+    private var savingParameters: Binding<GenerationParameters> {
+        Binding(
+            get: { parameters },
+            set: { newValue in
+                parameters = newValue
+                SessionSettings.saveParameters(newValue)
+            }
+        )
+    }
+
     private var selectedModel: LTXModel {
         LTXModelCatalog.resolvedModel(id: selectedModelID)
     }
@@ -109,7 +122,7 @@ struct ParametersView: View {
                     // Guidance scale
                     ParameterSlider(
                         title: "Guidance Scale",
-                        value: $parameters.guidanceScale,
+                        value: savingParameters.guidanceScale,
                         range: 1...15,
                         step: 0.5,
                         icon: "dial.medium",
@@ -126,7 +139,7 @@ struct ParametersView: View {
 
                         ResolutionSlider(
                             title: "Width",
-                            value: $parameters.width,
+                            value: savingParameters.width,
                             range: 256...2560,
                             step: 64,
                             icon: "arrow.left.and.right"
@@ -134,7 +147,7 @@ struct ParametersView: View {
 
                         ResolutionSlider(
                             title: "Height",
-                            value: $parameters.height,
+                            value: savingParameters.height,
                             range: 256...2560,
                             step: 64,
                             icon: "arrow.up.and.down"
@@ -176,7 +189,7 @@ struct ParametersView: View {
                         title: "Frames",
                         value: Binding(
                             get: { Double(parameters.numFrames) },
-                            set: { parameters.numFrames = Int($0) }
+                            set: { savingParameters.wrappedValue.numFrames = Int($0) }
                         ),
                         range: 25...1000,
                         step: 25,
@@ -199,7 +212,7 @@ struct ParametersView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         
-                        Picker("", selection: $parameters.fps) {
+                        Picker("", selection: savingParameters.fps) {
                             Text("12 fps").tag(12)
                             Text("20 fps").tag(20)
                             Text("24 fps").tag(24)
@@ -239,7 +252,7 @@ struct ParametersView: View {
                             .foregroundStyle(.secondary)
                         
                         HStack {
-                            TextField("Random", value: $parameters.seed, format: .number)
+                            TextField("Random", value: savingParameters.seed, format: .number)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(width: 120)
                             
@@ -271,7 +284,7 @@ struct ParametersView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         
-                        Picker("", selection: $parameters.vaeTilingMode) {
+                        Picker("", selection: savingParameters.vaeTilingMode) {
                             Text("Auto").tag("auto")
                             Text("None").tag("none")
                             Text("Default").tag("default")

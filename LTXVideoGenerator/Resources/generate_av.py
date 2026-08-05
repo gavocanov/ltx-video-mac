@@ -926,12 +926,22 @@ def _write_preview_frame(
             tiles = [cv2.resize(t, (new_w, new_h), interpolation=cv2.INTER_AREA) for t in tiles]
             h, w = new_h, new_w
 
-        # Horizontal contact sheet with thin separators.
+        # Grid contact sheet: cap tiles per row so the image isn't absurdly wide
+        # (which would render 1-2px tall when fit to the sidebar width).
         gap = 2
-        sheet = np.full((h, w * n + gap * (n - 1), 3), 255, dtype=np.uint8)
+        count = len(indices)
+        cols = min(count, 8)
+        rows = (count + cols - 1) // cols
+        sheet = np.full(
+            (h * rows + gap * (rows - 1), w * cols + gap * (cols - 1), 3),
+            255,
+            dtype=np.uint8,
+        )
         for i, t in enumerate(tiles):
-            x0 = i * (w + gap)
-            sheet[:, x0 : x0 + w] = t
+            r, c = divmod(i, cols)
+            y0 = r * (h + gap)
+            x0 = c * (w + gap)
+            sheet[y0 : y0 + h, x0 : x0 + w] = t
 
         os.makedirs(preview_dir, exist_ok=True)
         path = os.path.join(preview_dir, f"preview_{tag}.jpg")
