@@ -898,8 +898,9 @@ def _write_preview_frame(
         decoded = vae_decoder(frame)
         mx.eval(decoded)
         # (B, 3, 1, H', W') -> (H', W', 3)
-        img = mx.squeeze(decoded, axis=0)
-        img = mx.transpose(img, (2, 3, 1, 0))
+        img = mx.squeeze(decoded, axis=0)   # (3, 1, H', W')
+        img = mx.squeeze(img, axis=1)       # (1, H', W')  drop the single-frame dim
+        img = mx.transpose(img, (1, 2, 0))  # (H', W', 3)
         img = mx.clip((img + 1.0) / 2.0, 0.0, 1.0)
         img = (img * 255).astype(mx.uint8)
         arr = np.array(img)
