@@ -420,8 +420,27 @@ try:
     # and we can report real progress instead of silent downloads.
     try:
         from huggingface_hub import hf_hub_download, list_repo_files
+        from huggingface_hub.constants import HF_HUB_CACHE
         # Suppress huggingface_hub's own tqdm bars; we emit our own progress lines.
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+        # huggingface_hub >= 1.26 does NOT resume interrupted downloads across
+        # process restarts (it uses a process-unique temp file). Any partial left
+        # by a killed/cancelled run is dead weight that would otherwise accumulate
+        # and never be reused. Remove stale *.incomplete blobs for these repos so
+        # disk isn't wasted and downloads start clean.
+        try:
+            import glob as _glob
+            for repo in (model_repo, text_encoder_repo):
+                repo_dir = os.path.join(HF_HUB_CACHE, "models--" + repo.replace("/", "--"), "blobs")
+                for inc in _glob.glob(os.path.join(repo_dir, "*.incomplete")):
+                    try:
+                        os.remove(inc)
+                        log(f"Removed stale incomplete: {os.path.basename(inc)}")
+                    except OSError:
+                        pass
+        except Exception as e:
+            log(f"Incomplete-cache cleanup skipped: {e}")
 
         for repo, label in ((model_repo, "model"), (text_encoder_repo, "text encoder")):
             print(f"DOWNLOAD:START:{repo}", file=sys.stderr, flush=True)
@@ -429,7 +448,7 @@ try:
             total = len(files)
             for idx, filename in enumerate(files, start=1):
                 print(
-                    f"DOWNLOAD:PROGRESS:{idx}:{total}:{filename}",
+                    f"DOWNLOAD:PROGRESS:{idx}:{total}:{repo}:{filename}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -596,7 +615,7 @@ except Exception as e:
         do {
             output = try await runPython(
                 script: script,
-                timeout: 3600,
+                timeout: 21600, // 6h: model download + generation can exceed 1h on slow links
                 generationDiagnostics: (modelRepo: modelRepo, textEncoderRepo: textEncoderRepo),
                 originalVaeTilingMode: request.parameters.vaeTilingMode,
                 logFile: logFile
@@ -777,13 +796,14 @@ except Exception as e:
                         progressHandler(0.04, "Downloading \(repo)… (still working — large files can look idle)")
                     } else if cleanLine.hasPrefix("DOWNLOAD:PROGRESS:") {
                         let parts = cleanLine.dropFirst(18).split(separator: ":")
-                        if parts.count >= 3 {
+                        if parts.count >= 4 {
                             let currentFile = Int(parts[0]) ?? 0
                             let totalFiles = Int(parts[1]) ?? 1
-                            let filename = String(parts[2...].joined(separator: ":"))
+                            let repo = String(parts[2])
+                            let filename = String(parts[3...].joined(separator: ":"))
                             let pct = totalFiles > 0 ? Double(currentFile) / Double(totalFiles) : 0
                             let mappedProgress = 0.01 + (pct * 0.07)
-                            progressHandler(mappedProgress, "Downloading (\(currentFile)/\(totalFiles)): \(filename)")
+                            progressHandler(mappedProgress, "Downloading \(repo) (\(currentFile)/\(totalFiles)): \(filename)")
                         }
                     } else if cleanLine.hasPrefix("DOWNLOAD:COMPLETE:") {
                         progressHandler(0.08, "Model download complete")
