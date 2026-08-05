@@ -47,13 +47,16 @@ class GenerationService: ObservableObject {
     
     func cancelCurrent() {
         processingTask?.cancel()
-        if var request = currentRequest {
-            request.status = .cancelled
-            currentRequest = nil
+        if let request = currentRequest,
+           let index = queue.firstIndex(where: { $0.id == request.id }) {
+            queue[index].status = .cancelled
         }
+        currentRequest = nil
         isProcessing = false
         progress = 0
         statusMessage = ""
+        // Remove completed/failed/cancelled items from the queue.
+        queue.removeAll { $0.status != .pending }
     }
     
     func moveUp(_ request: GenerationRequest) {
