@@ -121,7 +121,6 @@ def _enhance_with_mlx_lm(
         prompt=formatted,
         max_tokens=max_tokens,
         sampler=sampler,
-        verbose=verbose,
     ):
         if response.finish_reason is not None:
             break
