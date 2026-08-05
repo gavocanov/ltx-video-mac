@@ -724,13 +724,13 @@ except Exception as e:
                                 mappedProgress = 0.01 + (stageProgress * 0.07)
                                 message = parts.count > 5
                                     ? String(parts[5...].joined(separator: ":"))
-                                    : "Downloading model files (\\(step)/\\(total))"
+                                    : "Downloading model files (\(step)/\(total))"
                             } else if stage == 1 {
                                 mappedProgress = 0.1 + (stageProgress * 0.4)
-                                message = "Stage 1 (\\(step)/\\(total)): Generating at half resolution"
+                                message = "Stage 1 (\(step)/\(total)): Generating at half resolution"
                             } else {
                                 mappedProgress = 0.5 + (stageProgress * 0.4)
-                                message = "Stage 2 (\\(step)/\\(total)): Refining at full resolution"
+                                message = "Stage 2 (\(step)/\(total)): Refining at full resolution"
                             }
                             progressHandler(mappedProgress, message)
                         }
