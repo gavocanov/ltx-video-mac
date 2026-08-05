@@ -42,7 +42,10 @@ struct ContentView: View {
                 generationService.clearError()
             }
         } message: { error in
-            Text(error.localizedDescription)
+            let text = error.localizedDescription
+            Text(text.count > 500 ? String(text.prefix(500)) + "\n… (truncated)" : text)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
         }
         .onChange(of: generationService.error) { _, newError in
             showError = newError != nil

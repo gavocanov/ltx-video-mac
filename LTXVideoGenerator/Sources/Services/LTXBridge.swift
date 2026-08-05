@@ -859,6 +859,30 @@ except Exception as e:
                 env["HOME"] = ProcessInfo.processInfo.environment["HOME"] ?? ""
                 env["USER"] = ProcessInfo.processInfo.environment["USER"] ?? ""
                 env["TMPDIR"] = ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp"
+                env["MTL_DEVICE_WRAPPER_TYPE"] = "1"
+                // Forward SSL/CA and Hugging Face settings so downloads work like in a terminal.
+                let forwardKeys = [
+                    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+                    "HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME", "HF_HUB_CACHE",
+                    "HF_HUB_DISABLE_TLS_VERIFICATION", "UV_SYSTEM_CERTS"
+                ]
+                for key in forwardKeys {
+                    if let value = ProcessInfo.processInfo.environment[key], !value.isEmpty {
+                        env[key] = value
+                    }
+                }
+                // Apply Hugging Face settings from Preferences (override inherited values).
+                let defaults = UserDefaults.standard
+                if let token = defaults.string(forKey: "hfToken"), !token.isEmpty {
+                    env["HF_TOKEN"] = token
+                }
+                if let caPath = defaults.string(forKey: "caBundlePath"), !caPath.isEmpty {
+                    env["SSL_CERT_FILE"] = caPath
+                    env["REQUESTS_CA_BUNDLE"] = caPath
+                }
+                if defaults.bool(forKey: "disableTLSVerification") {
+                    env["HF_HUB_DISABLE_TLS_VERIFICATION"] = "1"
+                }
                 process.environment = env
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
@@ -916,7 +940,31 @@ except Exception as e:
                 if let metalDevice = ProcessInfo.processInfo.environment["MTL_DEVICE_WRAPPER_TYPE"] {
                     env["MTL_DEVICE_WRAPPER_TYPE"] = metalDevice
                 }
-                
+
+                // Forward SSL/CA and Hugging Face settings so downloads work like in a terminal.
+                let forwardKeys = [
+                    "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+                    "HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HF_HOME", "HF_HUB_CACHE",
+                    "HF_HUB_DISABLE_TLS_VERIFICATION", "UV_SYSTEM_CERTS"
+                ]
+                for key in forwardKeys {
+                    if let value = ProcessInfo.processInfo.environment[key], !value.isEmpty {
+                        env[key] = value
+                    }
+                }
+                // Apply Hugging Face settings from Preferences (override inherited values).
+                let defaults = UserDefaults.standard
+                if let token = defaults.string(forKey: "hfToken"), !token.isEmpty {
+                    env["HF_TOKEN"] = token
+                }
+                if let caPath = defaults.string(forKey: "caBundlePath"), !caPath.isEmpty {
+                    env["SSL_CERT_FILE"] = caPath
+                    env["REQUESTS_CA_BUNDLE"] = caPath
+                }
+                if defaults.bool(forKey: "disableTLSVerification") {
+                    env["HF_HUB_DISABLE_TLS_VERIFICATION"] = "1"
+                }
+
                 process.environment = env
                 
                 let stdoutPipe = Pipe()

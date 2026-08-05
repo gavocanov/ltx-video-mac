@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PreferencesView: View {
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("pythonPath") private var pythonPath = ""
     @AppStorage("outputDirectory") private var outputDirectory = ""
     @AppStorage("autoLoadModel") private var autoLoadModel = false
@@ -14,6 +15,9 @@ struct PreferencesView: View {
     @AppStorage(LTXModelCatalog.selectedModelIDKey) private var selectedModelID = LTXModelCatalog.defaultModelID
     @AppStorage(LTXTextEncoderCatalog.selectedTextEncoderIDKey) private var selectedTextEncoderID = LTXTextEncoderCatalog.defaultTextEncoderID
     @AppStorage(LTXTextEncoderCatalog.customTextEncoderRepoKey) private var customTextEncoderRepo = ""
+    @AppStorage("hfToken") private var hfToken = ""
+    @AppStorage("caBundlePath") private var caBundlePath = ""
+    @AppStorage("disableTLSVerification") private var disableTLSVerification = false
 
     @State private var pythonStatus: (success: Bool, message: String)?
     @State private var pythonDetails: PythonDetails?
@@ -326,6 +330,43 @@ struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Hugging Face") {
+                    SecureField("HF Token", text: $hfToken)
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        TextField("CA Bundle Path", text: $caBundlePath)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Browse...") {
+                            selectCABundle()
+                        }
+                    }
+                    Toggle("Disable TLS verification", isOn: $disableTLSVerification)
+
+                    Divider()
+                    Label("Environment", systemImage: "terminal")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    let env = ProcessInfo.processInfo.environment
+                    if let t = env["HF_TOKEN"], !t.isEmpty {
+                        Label("HF_TOKEN: set", systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("HF_TOKEN: not set", systemImage: "xmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let c = env["SSL_CERT_FILE"] ?? env["REQUESTS_CA_BUNDLE"], !c.isEmpty {
+                        Label("CA bundle: \(c)", systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("CA bundle: not set", systemImage: "xmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Reset") {
                     HStack {
                         Button(role: .destructive) {
@@ -470,7 +511,13 @@ struct PreferencesView: View {
                 Label("About", systemImage: "info.circle")
             }
         }
-        .frame(width: 550, height: 450)
+        .frame(minWidth: 550, minHeight: 450)
+        .background(WindowAccessor { window in
+            window?.styleMask.insert(.resizable)
+        })
+        .onExitCommand {
+            dismiss()
+        }
         .sheet(isPresented: $showPathPicker) {
             DetectedPathsView(paths: detectedPaths, selectedPath: $pythonPath, isPresented: $showPathPicker)
         }
@@ -545,8 +592,20 @@ struct PreferencesView: View {
             ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("LTXVideoGenerator/Videos").path
             : outputDirectory
-        
+
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+    }
+
+    private func selectCABundle() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.data]
+
+        if panel.runModal() == .OK, let url = panel.url {
+            caBundlePath = url.path
+        }
     }
     
     private func detectPython() {
@@ -810,6 +869,59 @@ struct DetectedPathsView: View {
         
         await MainActor.run {
             isValidating = false
+        }
+    }
+}
+
+struct WindowAccessor: NSViewRepresentable {
+    var onUpdate: (NSWindow?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onUpdate: onUpdate)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onUpdate = onUpdate
+        context.coordinator.apply(nsView.window)
+    }
+
+    final class Coordinator {
+        var onUpdate: (NSWindow?) -> Void
+        private var observer: NSObjectProtocol?
+
+        init(onUpdate: @escaping (NSWindow?) -> Void) {
+            self.onUpdate = onUpdate
+        }
+
+        func attach(to view: NSView) {
+            // Re-apply once the window is available and whenever it changes.
+            DispatchQueue.main.async { [weak self] in
+                self?.apply(view.window)
+            }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                if let window = note.object as? NSWindow, window.contentView === view.superview ?? view {
+                    self?.apply(window)
+                }
+            }
+        }
+
+        func apply(_ window: NSWindow?) {
+            guard let window else { return }
+            onUpdate(window)
+        }
+
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
         }
     }
 }

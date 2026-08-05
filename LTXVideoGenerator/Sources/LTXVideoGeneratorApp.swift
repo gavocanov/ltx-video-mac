@@ -21,6 +21,7 @@ struct LTXVideoGeneratorApp: App {
         Settings {
             SettingsRootView()
         }
+        .windowResizability(.contentMinSize)
     }
 }
 
