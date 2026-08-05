@@ -130,6 +130,22 @@ struct PromptInputView: View {
                     .focused($isPromptFocused)
             }
 
+            // Manual prompt enhancer
+            Button {
+                Task { await runPreview() }
+            } label: {
+                if isPreviewing {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                    Text("Enhancing...")
+                } else {
+                    Label("Enhance Prompt", systemImage: "sparkles")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isPreviewing)
+            .help("Run AI to enhance your prompt, then edit, repeat, or accept the result.")
+
             // Character consistency profiles
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 12) {
@@ -677,6 +693,15 @@ struct PromptInputView: View {
                     showEnhancedPreview = false
                     enhancedPreview = nil
                     previewError = nil
+                },
+                onRepeat: {
+                    Task { await runPreview() }
+                },
+                onAccept: { acceptedText in
+                    prompt = acceptedText
+                    showEnhancedPreview = false
+                    enhancedPreview = nil
+                    previewError = nil
                 }
             )
         }
@@ -972,6 +997,10 @@ private struct EnhancedPreviewSheet: View {
     let originalPrompt: String
     let error: String?
     let onDismiss: () -> Void
+    let onRepeat: () -> Void
+    let onAccept: (String) -> Void
+
+    @State private var editedText: String = ""
 
     private var displayText: String {
         if !enhancedPrompt.isEmpty { return enhancedPrompt }
@@ -985,11 +1014,9 @@ private struct EnhancedPreviewSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label("Enhanced Prompt Preview", systemImage: "sparkles")
+                Label("Enhanced Prompt", systemImage: "sparkles")
                     .font(.headline)
                 Spacer()
-                Button("Done") { onDismiss() }
-                    .keyboardShortcut(.cancelAction)
             }
             if let err = error {
                 Text(err)
@@ -1001,22 +1028,28 @@ private struct EnhancedPreviewSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if !displayText.isEmpty {
-                ScrollView {
-                    Text(displayText)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
+            TextEditor(text: $editedText)
+                .font(.body)
+                .scrollContentBackground(.hidden)
                 .padding(8)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(minHeight: 160)
+                .onAppear {
+                    editedText = displayText
+                }
+            HStack {
+                Button("Dismiss") { onDismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Repeat") { onRepeat() }
+                Button("Accept") { onAccept(editedText) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
             }
-            Spacer()
         }
         .padding(24)
-        .frame(minWidth: 400, minHeight: 300)
+        .frame(minWidth: 400, minHeight: 320)
     }
 }
 
