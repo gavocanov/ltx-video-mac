@@ -1,12 +1,14 @@
 """Audio-Video generation pipeline for LTX-2."""
 
 import argparse
+import hashlib
 import json
 import os
 import struct
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +31,110 @@ class Colors:
     BOLD = "\033[1m"
     DIM = "\033[2m"
     RESET = "\033[0m"
+
+
+def _resume_download(url: str, dest: Path, expected_size: int) -> bool:
+    """Download `url` to `dest`, resuming from the largest existing partial.
+
+    huggingface_hub >= 1.0 downloads to a process-unique temp file and never
+    resumes, so interrupted multi-GB shards restart from scratch every run.
+    This reuses the largest existing `.incomplete` file via HTTP Range requests.
+    Returns True on success.
+    """
+    if dest.exists() and dest.stat().st_size == expected_size:
+        return True
+    partials = sorted(
+        dest.parent.glob(dest.name + ".*.incomplete"),
+        key=lambda p: p.stat().st_size,
+    )
+    resume_from = partials[-1].stat().st_size if partials else 0
+    if resume_from > expected_size:
+        resume_from = 0
+    headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            # If the server ignored our Range header (200 instead of 206),
+            # restart from scratch to avoid corrupting the partial file.
+            if resume_from and resp.status != 206:
+                resume_from = 0
+            mode = "ab" if resume_from else "wb"
+            with open(dest, mode) as out:
+                total = expected_size - resume_from
+                with tqdm(total=total, unit="B", unit_scale=True,
+                          desc=f"{dest.name[:12]}… (resume {resume_from})" if resume_from else dest.name[:12]) as bar:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        bar.update(len(chunk))
+        if dest.stat().st_size != expected_size:
+            raise OSError(f"size mismatch: got {dest.stat().st_size}, want {expected_size}")
+        return True
+    except Exception:
+        # Keep whatever we have for next time.
+        if dest.exists():
+            dest.replace(dest.with_name(dest.name + ".partial"))
+        return False
+
+
+def _ensure_enhancer_model(repo_id: str) -> None:
+    """Resumably complete the prompt-enhancer model in the HF cache.
+
+    mlx_lm.load() uses huggingface_hub which does not resume interrupted
+    downloads, causing multi-GB shards to re-download on every run. We fetch
+    the repo's LFS metadata and finish each missing shard with Range-resumed
+    downloads, writing into the exact HF cache layout (blob = content sha256,
+    snapshot symlink) so mlx_lm finds the snapshot complete and skips.
+    """
+    from huggingface_hub import HfApi
+
+    # Resolve the HF cache dir (respects HF_HOME / HF_HUB_CACHE env vars).
+    cache_dir = Path(
+        os.environ.get("HF_HUB_CACHE")
+        or os.path.join(os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface")), "hub")
+    )
+    repo_cache = cache_dir / ("models--" + repo_id.replace("/", "--"))
+    snapshots = repo_cache / "snapshots"
+    refs_main = repo_cache / "refs" / "main"
+    if not snapshots.exists() or not refs_main.exists():
+        return  # no prior cache; let mlx_lm do a fresh download
+    rev = refs_main.read_text().strip()
+    snap_dir = snapshots / rev
+    if not snap_dir.exists():
+        return
+
+    api = HfApi()
+    try:
+        files = api.list_repo_files(repo_id)
+    except Exception:
+        return
+    shards = [f for f in files if f.endswith(".safetensors")]
+    if not shards:
+        return
+
+    for fname in shards:
+        target = snap_dir / fname
+        if target.exists():
+            continue
+        try:
+            info = api.get_paths_info(repo_id, [fname], expand=False)[0]
+            size = info.size
+            lfs = getattr(info, "lfs", None) or {}
+            sha = lfs.get("sha256")
+        except Exception:
+            continue
+        if not sha:
+            continue
+        blob = repo_cache / "blobs" / sha
+        url = f"https://huggingface.co/{repo_id}/resolve/main/{fname}"
+        if _resume_download(url, blob, size):
+            try:
+                target.symlink_to(blob)
+            except OSError:
+                pass
+
 
 
 from mlx_video.models.ltx.config import LTXModelConfig, LTXModelType, LTXRopeType
@@ -1334,7 +1440,7 @@ def load_and_merge_lora(
             target_dtype = mx.bfloat16 if param.dtype == mx.bfloat16 else mx.float32
             param = param + delta.astype(target_dtype)
             merged += 1
-        except (AttributeError, IndexError, TypeError):
+        except (AttributeError, IndexError, TypeError, KeyError):
             continue
 
     if merged == 0:
@@ -1542,6 +1648,17 @@ def generate_video_with_audio(
         try:
             if use_uncensored_enhancer:
                 from mlx_video.models.ltx.enhance_prompt import enhance_with_model
+                from mlx_video.models.ltx.enhance_prompt import UNCENSORED_MODEL_REPO
+
+                # Resume any interrupted enhancer shards so mlx_lm.load doesn't
+                # re-download multi-GB files from scratch on every run.
+                try:
+                    _ensure_enhancer_model(UNCENSORED_MODEL_REPO)
+                except Exception as e:
+                    print(
+                        f"Warning: enhancer pre-download failed ({e}); continuing.",
+                        file=sys.stderr,
+                    )
 
                 print(
                     f"{Colors.MAGENTA}✨ Enhancing prompt (uncensored)...{Colors.RESET}"
