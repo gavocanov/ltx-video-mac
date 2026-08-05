@@ -285,6 +285,7 @@ struct LatentPreviewView: View {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity)
                 } else if generationService.isProcessing {
                     ZStack {
                         RoundedRectangle(cornerRadius: 8)
@@ -302,7 +303,6 @@ struct LatentPreviewView: View {
                     }
                 }
             }
-            .frame(height: 140)
             .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
