@@ -575,18 +575,16 @@ struct PromptInputView: View {
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else if generationService.currentRequest != nil {
-                    // Processing state - shows spinner (when there's an active generation)
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
-                        Text("Generating...")
+                    // Processing state - shows cancel button (when there's an active generation)
+                    Button {
+                        generationService.cancelCurrent()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
+                            .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.7))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.large)
                 } else {
                     // Normal state - generate button
                     Button {
