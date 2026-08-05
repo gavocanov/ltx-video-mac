@@ -1487,6 +1487,13 @@ def load_and_merge_lora(
             a_mx = mx.array(a)
             b_mx = mx.array(b)
             delta = (b_mx @ a_mx) * strength
+            # Some LoRA files store A/B in the opposite order; try both.
+            if delta.shape != param.shape:
+                alt = (a_mx @ b_mx) * strength
+                if alt.shape == param.shape:
+                    delta = alt
+                else:
+                    continue
             # Cast to a concrete MLX dtype; passing param.dtype (an MLX Dtype
             # object) to .astype() leaks into numpy and fails on bfloat16.
             target_dtype = mx.bfloat16 if param.dtype == mx.bfloat16 else mx.float32
