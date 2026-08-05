@@ -8,6 +8,7 @@ class GenerationService: ObservableObject {
     @Published private(set) var currentRequest: GenerationRequest?
     @Published private(set) var progress: Double = 0
     @Published private(set) var statusMessage: String = ""
+    @Published private(set) var previewImage: NSImage?
     @Published private(set) var isModelLoaded = false
     @Published private(set) var isProcessing = false
     @Published var error: LTXError?
@@ -125,7 +126,8 @@ class GenerationService: ObservableObject {
         
         isProcessing = true
         progress = 0
-        
+        previewImage = nil
+
         // Ensure Python packages (including mlx-video-with-audio min version) match the path in Settings — no manual Validate required.
         if let pythonPath = UserDefaults.standard.string(forKey: "pythonPath"), !pythonPath.isEmpty {
             statusMessage = "Checking Python environment..."
@@ -189,6 +191,11 @@ class GenerationService: ObservableObject {
                 DispatchQueue.main.async {
                     self?.progress = prog
                     self?.statusMessage = message
+                }
+            } previewHandler: { [weak self] path in
+                guard let image = NSImage(contentsOfFile: path) else { return }
+                DispatchQueue.main.async {
+                    self?.previewImage = image
                 }
             }
 
@@ -316,7 +323,8 @@ class GenerationService: ObservableObject {
         currentRequest = nil
         isProcessing = false
         progress = 0
-        
+        previewImage = nil
+
         // Remove completed/failed/cancelled from queue
         queue.removeAll { $0.status != .pending }
         

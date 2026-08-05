@@ -67,6 +67,9 @@ struct ContentView: View {
                 Divider()
                 ModelStatusView()
                     .padding()
+                Divider()
+                LatentPreviewView()
+                    .padding()
             }
         }
         .frame(width: 320)
@@ -235,6 +238,82 @@ struct ModelStatusView: View {
                 ))
                 .toggleStyle(.switch)
                 .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+}
+
+/// Live latent preview shown at the bottom of the sidebar during generation.
+struct LatentPreviewView: View {
+    @EnvironmentObject var generationService: GenerationService
+    @AppStorage("previewEvery") private var previewEvery = 3
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Image(systemName: "eye")
+                    .foregroundStyle(.blue)
+                Text("Latent Preview")
+                    .font(.caption.bold())
+                Spacer()
+                if generationService.isProcessing && generationService.previewImage != nil {
+                    Text("live")
+                        .font(.caption2.monospaced())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.green.opacity(0.2)))
+                        .foregroundStyle(.green)
+                }
+            }
+
+            // Preview image (or placeholder while generating).
+            Group {
+                if let image = generationService.previewImage {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else if generationService.isProcessing {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.black.opacity(0.05))
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.black.opacity(0.03))
+                        Text("No preview")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .frame(height: 140)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            // Cadence control: emit a preview every N denoise steps.
+            HStack(spacing: 6) {
+                Text("Every")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $previewEvery) {
+                    Text("1").tag(1)
+                    Text("3").tag(3)
+                    Text("10").tag(10)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 120)
+                Text("steps")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(12)

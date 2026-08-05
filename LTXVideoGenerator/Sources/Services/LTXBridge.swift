@@ -163,7 +163,8 @@ class LTXBridge {
     func generate(
         request: GenerationRequest,
         outputPath: String,
-        progressHandler: @escaping (Double, String) -> Void
+        progressHandler: @escaping (Double, String) -> Void,
+        previewHandler: ((String) -> Void)? = nil
     ) async throws -> (videoPath: String, seed: Int, enhancedPrompt: String?) {
         setupPythonPaths()
         
@@ -200,6 +201,19 @@ class LTXBridge {
         let enableGemmaPromptEnhancement = UserDefaults.standard.bool(forKey: "enableGemmaPromptEnhancement")
         let saveAudioTrackSeparately = UserDefaults.standard.bool(forKey: "saveAudioTrackSeparately")
         let useLocalMlxVideoRepoPref = UserDefaults.standard.bool(forKey: "useLocalMlxVideoRepo")
+        // Default cadence is 3; only honor an explicit stored value.
+        let previewEvery: Int
+        if UserDefaults.standard.object(forKey: "previewEvery") != nil {
+            previewEvery = max(0, UserDefaults.standard.integer(forKey: "previewEvery"))
+        } else {
+            previewEvery = 3
+        }
+        // Per-generation temp dir for latent preview frames.
+        let previewDir = NSTemporaryDirectory() + "ltx-preview-" + UUID().uuidString
+        try? FileManager.default.createDirectory(
+            atPath: previewDir,
+            withIntermediateDirectories: true
+        )
 
         // Apply prompt enhancement up-front so generation can continue safely even
         // when upstream enhancer internals fail.
@@ -352,9 +366,15 @@ try:
     log(f"Seed: \(seed)")
     
     disable_audio = \(request.disableAudio ? "True" : "False")
-    
+
+    # Run our vendored generate_av.py (patched for latent previews) instead of
+    # `python -m mlx_video.generate_av`, so we can emit PREVIEW frames mid-denoise.
+    generate_av_script = os.path.join("\(resourcesPath)", "generate_av.py")
+    if not os.path.exists(generate_av_script):
+        raise RuntimeError(f"Vendored generate_av.py not found at {generate_av_script}")
+
     cmd = [
-        sys.executable, "-m", "mlx_video.generate_av",
+        sys.executable, generate_av_script,
         "--prompt", prompt,
         "--height", str(\(genHeight)),
         "--width", str(\(genWidth)),
@@ -368,6 +388,9 @@ try:
         "--text-encoder-repo", text_encoder_repo,
         "--tiling", "\(effectiveTilingMode)",
     ]
+    if \(previewEvery) > 0:
+        cmd.extend(["--preview-every", str(\(previewEvery))])
+        cmd.extend(["--preview-dir", "\(previewDir)"])
     if negative_prompt.strip():
         cmd.extend(["--negative-prompt", negative_prompt])
     if disable_audio:
@@ -759,6 +782,11 @@ except Exception as e:
                         }
                     } else if cleanLine.hasPrefix("DOWNLOAD:COMPLETE:") {
                         progressHandler(0.08, "Model download complete")
+                    } else if cleanLine.hasPrefix("PREVIEW:") {
+                        let path = String(cleanLine.dropFirst("PREVIEW:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !path.isEmpty {
+                            previewHandler?(path)
+                        }
                     } else if cleanLine.contains("Downloading") || cleanLine.contains("Fetching") {
                         // huggingface_hub tqdm output
                         let fileCountPattern = #/(\d+)%\|[^|]*\|\s*(\d+)/(\d+)/#

@@ -36,6 +36,7 @@
 		AA000190 /* MacOSSystemMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000191; };
 		AA000192 /* LTXGenerationLogSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000193; };
 		AA000194 /* GenerationFailureRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000195; };
+		AA000199 /* generate_av.py in Resources */ = {isa = PBXBuildFile; fileRef = AA000198; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -67,6 +68,7 @@
 		AA000191 /* MacOSSystemMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacOSSystemMemory.swift; sourceTree = "<group>"; };
 		AA000193 /* LTXGenerationLogSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LTXGenerationLogSummary.swift; sourceTree = "<group>"; };
 		AA000195 /* GenerationFailureRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationFailureRecovery.swift; sourceTree = "<group>"; };
+		AA000198 /* generate_av.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = generate_av.py; sourceTree = "<group>"; };
 		AA000030 /* LTXVideoGenerator.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LTXVideoGenerator.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -110,6 +112,7 @@
 				AA00002A /* audio_generator.py */,
 				AA000034 /* av_generator.py */,
 				AA000032 /* enhance_prompt_preview.py */,
+				AA000198 /* generate_av.py */,
 				AA000028 /* prompts */,
 			);
 			path = Resources;
@@ -233,6 +236,7 @@
 				AA000029 /* audio_generator.py in Resources */,
 				AA000033 /* av_generator.py in Resources */,
 				AA000031 /* enhance_prompt_preview.py in Resources */,
+				AA000199 /* generate_av.py in Resources */,
 				AA000027 /* prompts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
