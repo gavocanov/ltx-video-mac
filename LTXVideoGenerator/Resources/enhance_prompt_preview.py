@@ -79,7 +79,7 @@ def _enhance_with_mlx_lm(
 ) -> str:
     """Enhance prompt using mlx_lm with given MLX model. No Lightricks/LTX-2 download."""
     try:
-        from mlx_lm import load, generate
+        from mlx_lm import load
         from mlx_lm.sample_utils import make_sampler
     except ImportError:
         print("mlx-lm not available. Install: pip install mlx-lm", file=sys.stderr)
@@ -109,18 +109,30 @@ def _enhance_with_mlx_lm(
 
     # mlx-lm 0.25+ uses sampler instead of temp kwarg (generate_step rejects temp)
     sampler = make_sampler(temperature, 1.0, 0.0, 1, top_k=0)
-    response = generate(
+
+    # Stream generation and stop cleanly at the model's end-of-turn token.
+    from mlx_lm import stream_generate
+
+    eos_id = tokenizer.eos_token_id
+    pieces: list[str] = []
+    for response in stream_generate(
         model,
         tokenizer,
         prompt=formatted,
         max_tokens=max_tokens,
         sampler=sampler,
         verbose=verbose,
-    )
+    ):
+        if response.finish_reason is not None:
+            break
+        if eos_id is not None and response.token == eos_id:
+            break
+        pieces.append(response.text)
+    response_text = "".join(pieces).strip()
 
     del model
     mx.clear_cache()
-    return response.strip()
+    return response_text
 
 
 def main():
