@@ -89,6 +89,10 @@ struct RootView: View {
                     if result.success, let details = result.details {
                         PythonEnvironment.shared.configureForPythonKit(details: details)
                         PythonEnvironment.shared.applyValidatedDetailsForGeneration(path: path, details: details)
+                        // Auto-load model on startup if enabled in Preferences.
+                        if UserDefaults.standard.bool(forKey: "autoLoadModel") {
+                            await generationService.loadModel()
+                        }
                     } else if result.pendingUserConsent, let details = result.details {
                         pendingLaunchUpgradeDetails = details
                         launchPythonPathForUpgrade = path

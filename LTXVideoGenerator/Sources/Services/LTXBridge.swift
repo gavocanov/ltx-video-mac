@@ -246,21 +246,6 @@ class LTXBridge {
             }
         }
 
-        // Escape the prompt for Python
-        let escapedPrompt = generationPrompt
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-        let escapedNegativePrompt = request.negativePrompt
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-        
-        // Escape source image path if provided
-        let escapedImagePath = request.sourceImagePath?
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"") ?? ""
-        
         // Log file path: same folder and base name as the output video, .log extension.
         let logFile = (outputPath as NSString).deletingPathExtension + ".log"
         
@@ -269,346 +254,46 @@ class LTXBridge {
         let genHeight = (params.height / 64) * 64
         
         let resourcesPath = Bundle.main.bundlePath + "/Contents/Resources"
-        
-        let script: String
-        // LTX-2 Unified - uses mlx-video-with-audio package
-        script = """
-import os
-import sys
-import json
-import subprocess
-import time
-import select
-import signal
 
-# Set up file logging
-log_file = open("\(logFile)", "w")
-def log(msg):
-    print(msg, file=log_file, flush=True)
-    print(msg, file=sys.stderr, flush=True)
+        // Run our vendored generate_av_runner.py (a standalone script) instead of
+        // embedding Python in Swift, so we avoid Swift/Python interpolation bugs.
+        let runnerScript = resourcesPath + "/generate_av_runner.py"
+        guard FileManager.default.fileExists(atPath: runnerScript) else {
+            throw LTXError.generationFailed("Generation runner script not found at \(runnerScript)")
+        }
+        var scriptArgs = [
+            "--log-file", logFile,
+            "--model-repo", modelRepo,
+            "--text-encoder-repo", textEncoderRepo,
+            "--use-local-pref", useLocalMlxVideoRepoPref ? "1" : "0",
+            "--image-path", request.sourceImagePath ?? "",
+            "--prompt", generationPrompt,
+            "--negative-prompt", request.negativePrompt,
+            "--width", String(genWidth),
+            "--height", String(genHeight),
+            "--num-frames", String(params.numFrames),
+            "--seed", String(seed),
+            "--fps", String(params.fps),
+            "--steps", String(params.numInferenceSteps),
+            "--cfg-scale", String(params.guidanceScale),
+            "--output-path", outputPath,
+            "--tiling", effectiveTilingMode,
+            "--preview-every", String(previewEvery),
+            "--preview-dir", previewDir,
+            "--resources-path", resourcesPath,
+        ]
+        if request.disableAudio { scriptArgs.append("--disable-audio") }
+        if saveAudioTrackSeparately { scriptArgs.append("--save-audio-separately") }
+        if let img = request.sourceImagePath, !img.isEmpty {
+            scriptArgs.append(contentsOf: ["--image-strength", String(params.imageStrength)])
+        }
+        if let lora = params.loraPath, !lora.isEmpty {
+            scriptArgs.append(contentsOf: ["--lora-path", lora])
+            scriptArgs.append(contentsOf: ["--lora-strength", String(params.loraStrength)])
+        }
 
-try:
-    log("=== LTX-2 Unified AV Generation Started ===")
-    log(f"Python: {sys.executable}")
-    
-    # Check MLX
-    import mlx.core as mx
-    log(f"MLX device: Apple Silicon")
-    
-    model_repo = "\(modelRepo)"
-    text_encoder_repo = "\(textEncoderRepo)"
-    log(f"Model: {model_repo}")
-    log(f"Text encoder: {text_encoder_repo}")
-    local_mlx_video_repo = os.path.expanduser("~/projects/mlx-video-with-audio")
-    local_has_mlx = os.path.exists(os.path.join(local_mlx_video_repo, "mlx_video", "generate_av.py"))
-
-    def _mlx_version_subprocess(extra_env):
-        env = os.environ.copy()
-        env.pop("PYTHONPATH", None)
-        for k, v in extra_env.items():
-            env[k] = v
-        r = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import mlx_video.version; print(mlx_video.version.__version__)",
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
-        if r.returncode != 0:
-            return None
-        return (r.stdout or "").strip() or None
-
-    def _parse_version_tuple(s):
-        if not s:
-            return None
-        parts = []
-        for seg in s.split("."):
-            digits = "".join(c for c in seg if c.isdigit())
-            try:
-                parts.append(int(digits) if digits else 0)
-            except Exception:
-                parts.append(0)
-        return tuple(parts)
-
-    pip_ver = _mlx_version_subprocess({})
-    local_ver = _mlx_version_subprocess({"PYTHONPATH": local_mlx_video_repo}) if local_has_mlx else None
-    use_local_pref = \(useLocalMlxVideoRepoPref ? "True" : "False")
-    force_local = os.environ.get("LTX_FORCE_LOCAL_MLX_VIDEO") == "1" or use_local_pref
-
-    if not local_has_mlx:
-        use_local_mlx_video_repo = False
-    elif force_local:
-        use_local_mlx_video_repo = True
-    elif pip_ver and local_ver:
-        use_local_mlx_video_repo = _parse_version_tuple(local_ver) > _parse_version_tuple(pip_ver)
-    else:
-        use_local_mlx_video_repo = bool(local_ver) and not pip_ver
-
-    log(
-        "mlx-video-with-audio versions: pip=%r local_repo=%r -> use_local_repo=%s"
-        % (pip_ver, local_ver, use_local_mlx_video_repo)
-    )
-    if local_has_mlx and not use_local_mlx_video_repo and pip_ver and local_ver:
-        if _parse_version_tuple(pip_ver) >= _parse_version_tuple(local_ver):
-            log(
-                "Using pip/site-packages (newer or same as ~/projects/mlx-video-with-audio). "
-                "Preferences: enable 'Use local mlx-video-with-audio repo' or set LTX_FORCE_LOCAL_MLX_VIDEO=1 to override."
-            )
-
-    # Image-to-video mode
-    source_image_path = "\(escapedImagePath)" if "\(escapedImagePath)" else None
-    mode = "image-to-video" if source_image_path else "text-to-video"
-    
-    prompt = '''\(escapedPrompt)'''
-    negative_prompt = '''\(escapedNegativePrompt)'''
-    log(f"Prompt: {prompt[:100]}...")
-    log(f"Size: \(genWidth)x\(genHeight), \(params.numFrames) frames")
-    log(f"Seed: \(seed)")
-    
-    disable_audio = \(request.disableAudio ? "True" : "False")
-
-    # Run our vendored generate_av.py (patched for latent previews) instead of
-    # `python -m mlx_video.generate_av`, so we can emit PREVIEW frames mid-denoise.
-    generate_av_script = os.path.join("\(resourcesPath)", "generate_av.py")
-    if not os.path.exists(generate_av_script):
-        raise RuntimeError(f"Vendored generate_av.py not found at {generate_av_script}")
-
-    cmd = [
-        sys.executable, generate_av_script,
-        "--prompt", prompt,
-        "--height", str(\(genHeight)),
-        "--width", str(\(genWidth)),
-        "--num-frames", str(\(params.numFrames)),
-        "--seed", str(\(seed)),
-        "--fps", str(\(params.fps)),
-        "--steps", str(\(params.numInferenceSteps)),
-        "--cfg-scale", str(\(params.guidanceScale)),
-        "--output-path", "\(outputPath)",
-        "--model-repo", model_repo,
-        "--text-encoder-repo", text_encoder_repo,
-        "--tiling", "\(effectiveTilingMode)",
-    ]
-    if \(previewEvery) > 0:
-        cmd.extend(["--preview-every", str(\(previewEvery))])
-        cmd.extend(["--preview-dir", "\(previewDir)"])
-    if negative_prompt.strip():
-        cmd.extend(["--negative-prompt", negative_prompt])
-    if disable_audio:
-        cmd.append("--no-audio")
-        log(f"Mode: {mode} (audio disabled; video-only mux)")
-    else:
-        log(f"Mode: {mode} (with audio)")
-    
-    # Add image conditioning if provided
-    if source_image_path:
-        cmd.extend(["--image", source_image_path])
-        cmd.extend(["--image-strength", str(\(params.imageStrength))])
-        log(f"Image conditioning: {source_image_path}")
-
-    # Add LoRA adapter if provided
-    if let loraPath = params.loraPath, !loraPath.isEmpty:
-        cmd.extend(["--lora-path", loraPath])
-        cmd.extend(["--lora-strength", str(\(params.loraStrength))])
-        log(f"LoRA: {loraPath} (strength \(params.loraStrength))")
-
-    if (not disable_audio) and \(saveAudioTrackSeparately ? "True" : "False"):
-        cmd.append("--save-audio-separately")
-        log("Saving audio track separately")
-    
-    log("Starting generation...")
-    log(f"Command: {' '.join(cmd)}")
-
-    # Pre-download model + text encoder so mlx_video.generate_av finds them cached
-    # and we can report real progress instead of silent downloads.
-    try:
-        from huggingface_hub import hf_hub_download, list_repo_files
-        from huggingface_hub.constants import HF_HUB_CACHE
-        # Suppress huggingface_hub's own tqdm bars; we emit our own progress lines.
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-
-        # huggingface_hub >= 1.26 does NOT resume interrupted downloads across
-        # process restarts (it uses a process-unique temp file). Any partial left
-        # by a killed/cancelled run is dead weight that would otherwise accumulate
-        # and never be reused. Remove stale *.incomplete blobs for these repos so
-        # disk isn't wasted and downloads start clean.
-        try:
-            import glob as _glob
-            for repo in (model_repo, text_encoder_repo):
-                repo_dir = os.path.join(HF_HUB_CACHE, "models--" + repo.replace("/", "--"), "blobs")
-                for inc in _glob.glob(os.path.join(repo_dir, "*.incomplete")):
-                    try:
-                        os.remove(inc)
-                        log(f"Removed stale incomplete: {os.path.basename(inc)}")
-                    except OSError:
-                        pass
-        except Exception as e:
-            log(f"Incomplete-cache cleanup skipped: {e}")
-
-        for repo, label in ((model_repo, "model"), (text_encoder_repo, "text encoder")):
-            print(f"DOWNLOAD:START:{repo}", file=sys.stderr, flush=True)
-            files = list_repo_files(repo)
-            total = len(files)
-            for idx, filename in enumerate(files, start=1):
-                print(
-                    f"DOWNLOAD:PROGRESS:{idx}:{total}:{repo}:{filename}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                hf_hub_download(repo_id=repo, filename=filename)
-            print(f"DOWNLOAD:COMPLETE:{repo}", file=sys.stderr, flush=True)
-    except Exception as e:
-        log(f"Pre-download failed (will rely on lazy download): {e}")
-
-    child_env = os.environ.copy()
-    # Drop inherited PYTHONPATH so venv site-packages wins unless we explicitly use a local checkout.
-    child_env.pop("PYTHONPATH", None)
-    if use_local_mlx_video_repo:
-        child_env["PYTHONPATH"] = local_mlx_video_repo
-    
-    # Run the CLI module and stream combined output (binary read so we see tqdm \\r updates)
-    process = subprocess.Popen(
-        cmd,
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
-    )
-    
-    # Unbuffered read: use os.read() on the raw fd so every line the inner process
-    # flushes is available immediately.  process.stdout.read(n) uses Python's
-    # BufferedReader which blocks until n bytes accumulate, starving the progress loop.
-    line_buf = ""
-    interactivity_watchdog = False
-    download_in_progress = False
-    last_download_activity = None  # None = not in download phase yet; set when first download line seen
-    # Large models can go quiet between tqdm updates; heartbeats + long window avoid false kills.
-    download_stall_timeout = 7200  # 2 hours without *any* subprocess output while downloading
-    stdout_fd = process.stdout.fileno()
-    while True:
-        if process.stdout is None:
-            break
-        ready, _, _ = select.select([process.stdout], [], [], 1.0)
-        if ready:
-            try:
-                raw = os.read(stdout_fd, 8192)
-            except (ValueError, OSError):
-                raw = b""
-            if not raw:
-                if process.poll() is not None:
-                    break
-                continue
-            # Decode and treat any received data as activity when we're in download phase
-            try:
-                chunk = raw.decode("utf-8", errors="replace")
-            except Exception:
-                chunk = ""
-            if download_in_progress and last_download_activity is not None:
-                last_download_activity = time.time()
-            line_buf += chunk
-            # Partial tqdm line (e.g. "  3%|") also counts as download activity
-            if "%" in line_buf and "|" in line_buf:
-                download_in_progress = True
-                if last_download_activity is None:
-                    last_download_activity = time.time()
-            _nl = "\\n"
-            _cr = "\\r"
-            while _nl in line_buf or _cr in line_buf:
-                line, sep, rest = line_buf.partition(_nl)
-                if not sep:
-                    line, sep, rest = line_buf.partition(_cr)
-                line_buf = rest if sep else line_buf
-                if not sep:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                log(line)
-                low = line.lower()
-                if ("impacting interactivity" in low) or ("kiogpucommandbuffercallbackerrorimpactinginteractivity" in low):
-                    interactivity_watchdog = True
-                if ("fetching" in low) or ("downloading" in low) or line.startswith("DOWNLOAD:") or ("%" in line and "|" in line):
-                    download_in_progress = True
-                    if last_download_activity is None:
-                        last_download_activity = time.time()
-                if line.startswith("STAGE:") or "generation..." in low or "decoding" in low:
-                    download_in_progress = False
-                    last_download_activity = None
-                # Emit explicit phase statuses so UI doesn't look frozen after denoising
-                if "decoding video" in low:
-                    print("STATUS:Decoding video...", file=sys.stderr, flush=True)
-                elif "video encoded" in low:
-                    print("STATUS:Saving video frames...", file=sys.stderr, flush=True)
-                elif "decoding audio" in low:
-                    print("STATUS:Decoding audio...", file=sys.stderr, flush=True)
-                elif "combining video and audio" in low:
-                    print("STATUS:Saving final video...", file=sys.stderr, flush=True)
-                elif "saved video with audio" in low:
-                    print("STATUS:Saving final video...", file=sys.stderr, flush=True)
-                print(line, file=sys.stderr, flush=True)
-        else:
-            if process.poll() is not None:
-                break
-            # Only enforce stall when we've seen download start and then no data for timeout
-            if download_in_progress and last_download_activity is not None:
-                stalled_for = int(time.time() - last_download_activity)
-                if stalled_for >= download_stall_timeout:
-                    print(f"DOWNLOAD:STALL:{stalled_for}", file=sys.stderr, flush=True)
-                    log(f"ERROR: model download stalled for {stalled_for}s (no data received)")
-                    process.kill()
-                    raise TimeoutError(f"Model download stalled for {stalled_for}s")
-    
-    process.wait()
-    
-    if process.returncode != 0:
-        if process.returncode < 0:
-            signal_num = -process.returncode
-            signal_name = signal.Signals(signal_num).name if signal_num in signal.Signals._value2member_map_ else f"signal {signal_num}"
-            if signal_num == signal.SIGKILL:
-                log("DIAGNOSTIC_SIGKILL: mlx_video.generate_av killed by SIGKILL (exit code -9); likely macOS memory pressure during text encoder / model eval.")
-                raise RuntimeError(
-                    "mlx_video.generate_av was killed by SIGKILL (exit code -9). "
-                    "macOS often sends SIGKILL under unified memory pressure (jetsam). "
-                    "Try a smaller text encoder in Preferences, aggressive VAE tiling, lower resolution or frames, or close other apps. "
-                    "Full output is in /tmp/ltx_generation.log."
-                )
-            if signal_num == signal.SIGABRT:
-                if interactivity_watchdog:
-                    log("DIAGNOSTIC_METAL_INTERACTIVITY: SIGABRT after Metal Impacting Interactivity watchdog.")
-                    raise RuntimeError(
-                        "DIAGNOSTIC_METAL_INTERACTIVITY: mlx_video.generate_av aborted with SIGABRT (code -6) after "
-                        "[METAL] Impacting Interactivity / kIOGPUCommandBufferCallbackErrorImpactingInteractivity. "
-                        "Try VAE tiling auto or conservative instead of aggressive; reduce resolution or frames."
-                    )
-                raise RuntimeError(
-                    "mlx_video.generate_av aborted with SIGABRT (code -6). "
-                    "This is usually a native MLX/Metal abort, often from peak unified-memory pressure "
-                    "or the macOS Metal watchdog terminating a long-running command buffer. "
-                    "Update mlx-video-with-audio, then retry with lower-memory settings if needed. "
-                    "Full subprocess output is in /tmp/ltx_generation.log."
-                )
-            raise RuntimeError(
-                f"mlx_video.generate_av was terminated by {signal_name} (code {process.returncode}). "
-                "Full subprocess output is in /tmp/ltx_generation.log."
-            )
-        raise RuntimeError(f"mlx_video.generate_av failed with code {process.returncode}")
-    
-    log(f"Video with audio saved to: \(outputPath)")
-    log("Generation complete!")
-    log_file.close()
-    print(json.dumps({"video_path": "\(outputPath)", "seed": \(seed), "mode": mode, "has_audio": not disable_audio}))
-except Exception as e:
-    log(f"ERROR: {e}")
-    import traceback
-    log(traceback.format_exc())
-    log_file.close()
-    sys.exit(1)
-"""
-        
         progressHandler(0.05, "Running MLX generation...")
-        
+
         // Thread-safe capture of enhanced prompt from stderr
         let enhancedPromptLock = NSLock()
         var capturedEnhancedPrompt: String? = preEnhancedPrompt
@@ -616,11 +301,12 @@ except Exception as e:
         var capturedFailureHint: String? = nil
         let stderrLineBufferLock = NSLock()
         var stderrLineBuffer = ""
-        
+
         let output: String
         do {
             output = try await runPython(
-                script: script,
+                script: runnerScript,
+                scriptArgs: scriptArgs,
                 timeout: 21600, // 6h: model download + generation can exceed 1h on slow links
                 generationDiagnostics: (modelRepo: modelRepo, textEncoderRepo: textEncoderRepo),
                 originalVaeTilingMode: request.parameters.vaeTilingMode,
@@ -921,7 +607,70 @@ except Exception as e:
             args.append(contentsOf: ["--image", img])
         }
         progressHandler("Loading prompt enhancer (first run may download ~7GB)...")
-        let output = try await runPythonScript(executable: python, arguments: args, timeout: 300)
+        let output = try await runPythonScript(
+            executable: python,
+            arguments: args,
+            timeout: 21600, // 6h: first-run model download can be large
+            stderrHandler: { chunk in
+                // Parse DOWNLOAD:/STATUS: tokens into user-facing progress.
+                for line in chunk.split(separator: "\n") {
+                    let clean = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if clean.hasPrefix("DOWNLOAD:START:") {
+                        let repo = String(clean.dropFirst("DOWNLOAD:START:".count))
+                        DispatchQueue.main.async {
+                            progressHandler("Downloading prompt enhancer model (\(repo))...")
+                        }
+                    } else if clean.hasPrefix("DOWNLOAD:PROGRESS:") {
+                        let parts = clean.dropFirst("DOWNLOAD:PROGRESS:".count).split(separator: ":")
+                        if parts.count >= 4 {
+                            let currentFile = Int(parts[0]) ?? 0
+                            let totalFiles = Int(parts[1]) ?? 1
+                            let filename = String(parts[3...].joined(separator: ":"))
+                            DispatchQueue.main.async {
+                                progressHandler("Downloading prompt enhancer model (\(currentFile)/\(totalFiles)): \(filename)")
+                            }
+                        }
+                    } else if clean.hasPrefix("DOWNLOAD:BYTES:") {
+                        let parts = clean.dropFirst("DOWNLOAD:BYTES:".count).split(separator: ":")
+                        if parts.count >= 3,
+                           let pct = Int(parts[0]),
+                           let done = Double(parts[1]),
+                           let totalBytes = Double(parts[2]),
+                           totalBytes > 0 {
+                            let mbDone = done / 1_048_576
+                            let mbTotal = totalBytes / 1_048_576
+                            DispatchQueue.main.async {
+                                progressHandler(String(format: "Downloading prompt enhancer model… %.1f%% (%.0f / %.0f MB)", Double(pct), mbDone, mbTotal))
+                            }
+                        }
+                    } else if clean.hasPrefix("DOWNLOAD:COMPLETE:") {
+                        DispatchQueue.main.async {
+                            progressHandler("Prompt enhancer model downloaded. Loading...")
+                        }
+                    } else if clean.hasPrefix("CLEANED:") {
+                        let filename = String(clean.dropFirst("CLEANED:".count))
+                        DispatchQueue.main.async {
+                            progressHandler("Cleaning interrupted download: \(filename)")
+                        }
+                    } else if clean.hasPrefix("FILE_FAILED:") {
+                        let rest = String(clean.dropFirst("FILE_FAILED:".count))
+                        DispatchQueue.main.async {
+                            progressHandler("Download issue: \(rest)")
+                        }
+                    } else if clean.hasPrefix("PREDOWNLOAD_ERROR:") {
+                        let rest = String(clean.dropFirst("PREDOWNLOAD_ERROR:".count))
+                        DispatchQueue.main.async {
+                            progressHandler("Download failed: \(rest)")
+                        }
+                    } else if clean.hasPrefix("STATUS:") {
+                        let message = String(clean.dropFirst("STATUS:".count))
+                        DispatchQueue.main.async {
+                            progressHandler(message)
+                        }
+                    }
+                }
+            }
+        )
         if let data = output.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let enhanced = json["enhanced_prompt"] as? String, !enhanced.isEmpty {
@@ -937,7 +686,8 @@ except Exception as e:
     private func runPythonScript(
         executable: String,
         arguments: [String],
-        timeout: TimeInterval = 60
+        timeout: TimeInterval = 60,
+        stderrHandler: ((String) -> Void)? = nil
     ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -979,13 +729,38 @@ except Exception as e:
                 let stderrPipe = Pipe()
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
+                if let stderrHandler {
+                    stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                        let data = handle.availableData
+                        if !data.isEmpty, let str = String(data: data, encoding: .utf8) {
+                            stderrHandler(str)
+                        }
+                    }
+                }
                 do {
                     try process.run()
                     // Put in its own process group so we can kill the whole tree on quit.
                     setpgid(process.processIdentifier, process.processIdentifier)
                     ProcessRegistry.shared.register(process)
+                    // Enforce the timeout: kill the process tree if it exceeds the limit.
+                    let timedOut = DispatchSemaphore(value: 0)
+                    let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+                    timer.schedule(deadline: .now() + timeout)
+                    timer.setEventHandler {
+                        process.terminate()
+                        // Kill the whole process group (children may outlive the parent).
+                        kill(-process.processIdentifier, SIGKILL)
+                        timedOut.signal()
+                    }
+                    timer.resume()
                     process.waitUntilExit()
+                    timer.cancel()
                     ProcessRegistry.shared.unregister(process)
+                    let didTimeout = timedOut.wait(timeout: .now()) == .success
+                    if didTimeout {
+                        continuation.resume(throwing: LTXError.generationFailed("Timed out after \(Int(timeout))s"))
+                        return
+                    }
                     let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: outputData, encoding: .utf8) ?? ""
                     let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1005,6 +780,7 @@ except Exception as e:
 
     private func runPython(
         script: String,
+        scriptArgs: [String] = [],
         timeout: TimeInterval = 60,
         generationDiagnostics: (modelRepo: String, textEncoderRepo: String)? = nil,
         originalVaeTilingMode: String? = nil,
@@ -1016,12 +792,16 @@ except Exception as e:
         }
 
         let logFile = logFile
-        
+
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: python)
-                process.arguments = ["-c", script]
+                if scriptArgs.isEmpty {
+                    process.arguments = ["-c", script]
+                } else {
+                    process.arguments = [script] + scriptArgs
+                }
                 
                 // Clean environment for MLX
                 var env: [String: String] = [:]

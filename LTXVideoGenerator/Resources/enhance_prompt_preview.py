@@ -90,6 +90,67 @@ def _enhance_with_mlx_lm(
         file=sys.stderr,
         flush=True,
     )
+    # Pre-download the model so we can report real progress instead of a silent
+    # hang inside load(). Emit DOWNLOAD:* tokens on stderr for the Swift side.
+    try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+        from tqdm import tqdm
+
+        class _ByteProgress(tqdm):
+            """Emit per-file byte progress as DOWNLOAD:BYTES tokens."""
+            def __init__(self, *args, **kwargs):
+                kwargs.setdefault("disable", False)
+                super().__init__(*args, **kwargs)
+
+            def update(self, n=1):
+                super().update(n)
+                if self.total:
+                    pct = int(100 * self.n / self.total)
+                    print(
+                        f"DOWNLOAD:BYTES:{pct}:{self.n}:{self.total}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+        # NOTE: do NOT set HF_HUB_DISABLE_PROGRESS_BARS here — we rely on tqdm
+        # running so _ByteProgress.update() emits DOWNLOAD:BYTES tokens.
+        # Remove stale *.incomplete blobs so interrupted downloads don't cause
+        # lock contention or dead weight; huggingface_hub >= 1.26 doesn't resume them.
+        try:
+            import glob as _glob
+            from huggingface_hub.constants import HF_HUB_CACHE
+            repo_dir = os.path.join(HF_HUB_CACHE, "models--" + model_repo.replace("/", "--"), "blobs")
+            for inc in _glob.glob(os.path.join(repo_dir, "*.incomplete")):
+                try:
+                    os.remove(inc)
+                    print(f"CLEANED:{os.path.basename(inc)}", file=sys.stderr, flush=True)
+                except OSError:
+                    pass
+        except Exception as e:
+            print(f"Incomplete-cache cleanup skipped: {e}", file=sys.stderr, flush=True)
+
+        print(f"DOWNLOAD:START:{model_repo}", file=sys.stderr, flush=True)
+        files = list_repo_files(model_repo)
+        total = len(files)
+        for idx, filename in enumerate(files, start=1):
+            print(
+                f"DOWNLOAD:PROGRESS:{idx}:{total}:{model_repo}:{filename}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                hf_hub_download(
+                    repo_id=model_repo,
+                    filename=filename,
+                    tqdm_class=_ByteProgress,
+                )
+            except Exception as e:
+                print(f"FILE_FAILED:{filename}:{e}", file=sys.stderr, flush=True)
+        print(f"DOWNLOAD:COMPLETE:{model_repo}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"PREDOWNLOAD_ERROR:{type(e).__name__}:{e}", file=sys.stderr, flush=True)
+
+    print("STATUS:Loading prompt enhancer model...", file=sys.stderr, flush=True)
     model, tokenizer = load(model_repo)
 
     if system_prompt is None:

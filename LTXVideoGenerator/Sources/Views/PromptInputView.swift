@@ -147,6 +147,11 @@ struct PromptInputView: View {
             .buttonStyle(.bordered)
             .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isPreviewing)
             .help("Run AI to enhance your prompt, then edit, repeat, or accept the result.")
+            if isPreviewing, !previewStatusMessage.isEmpty {
+                Text(previewStatusMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             // Character consistency profiles
             DisclosureGroup {
