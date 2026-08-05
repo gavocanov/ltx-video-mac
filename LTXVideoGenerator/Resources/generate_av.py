@@ -1305,7 +1305,7 @@ def load_and_merge_lora(
             a_mx = mx.array(a)
             b_mx = mx.array(b)
             delta = (b_mx @ a_mx) * strength
-            param = param + delta
+            param = param + delta.astype(param.dtype)
             merged += 1
         except (AttributeError, IndexError, TypeError):
             continue
