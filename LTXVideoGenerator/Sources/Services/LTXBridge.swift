@@ -408,7 +408,13 @@ try:
         cmd.extend(["--image", source_image_path])
         cmd.extend(["--image-strength", str(\(params.imageStrength))])
         log(f"Image conditioning: {source_image_path}")
-    
+
+    # Add LoRA adapter if provided
+    if let loraPath = params.loraPath, !loraPath.isEmpty:
+        cmd.extend(["--lora-path", loraPath])
+        cmd.extend(["--lora-strength", str(\(params.loraStrength))])
+        log(f"LoRA: {loraPath} (strength \(params.loraStrength))")
+
     if (not disable_audio) and \(saveAudioTrackSeparately ? "True" : "False"):
         cmd.append("--save-audio-separately")
         log("Saving audio track separately")

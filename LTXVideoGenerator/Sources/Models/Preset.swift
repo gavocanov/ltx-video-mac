@@ -39,7 +39,9 @@ struct Preset: Identifiable, Codable, Equatable, Hashable {
                 fps: 24,
                 seed: nil,
                 vaeTilingMode: "aggressive",
-                imageStrength: 1.0
+                imageStrength: 1.0,
+                loraPath: nil,
+                loraStrength: 1.0
             ),
             isBuiltIn: true
         ),
@@ -64,7 +66,9 @@ struct Preset: Identifiable, Codable, Equatable, Hashable {
                 fps: 24,
                 seed: nil,
                 vaeTilingMode: "auto",
-                imageStrength: 1.0
+                imageStrength: 1.0,
+                loraPath: nil,
+                loraStrength: 1.0
             ),
             isBuiltIn: true
         ),
@@ -79,7 +83,9 @@ struct Preset: Identifiable, Codable, Equatable, Hashable {
                 fps: 24,
                 seed: nil,
                 vaeTilingMode: "auto",
-                imageStrength: 1.0
+                imageStrength: 1.0,
+                loraPath: nil,
+                loraStrength: 1.0
             ),
             isBuiltIn: true
         ),
@@ -94,7 +100,9 @@ struct Preset: Identifiable, Codable, Equatable, Hashable {
                 fps: 24,
                 seed: nil,
                 vaeTilingMode: "auto",
-                imageStrength: 1.0
+                imageStrength: 1.0,
+                loraPath: nil,
+                loraStrength: 1.0
             ),
             isBuiltIn: true
         )

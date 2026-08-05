@@ -887,7 +887,9 @@ struct PromptInputView: View {
                     fps: parameters.fps,
                     seed: Int.random(in: 0..<Int(Int32.max)),
                     vaeTilingMode: parameters.vaeTilingMode,
-                    imageStrength: parameters.imageStrength
+                    imageStrength: parameters.imageStrength,
+                    loraPath: parameters.loraPath,
+                    loraStrength: parameters.loraStrength
                 )
             )
         }

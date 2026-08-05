@@ -1,5 +1,6 @@
 import SwiftUI
 import Metal
+import UniformTypeIdentifiers
 
 struct ParametersView: View {
     @EnvironmentObject var presetManager: PresetManager
@@ -60,7 +61,61 @@ struct ParametersView: View {
                     .help("Save current settings as preset")
                 }
             }
-            
+
+            // LoRA adapter
+            VStack(alignment: .leading, spacing: 8) {
+                Label("LoRA", systemImage: "wand.and.stars")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 6) {
+                    Text(parameters.loraPath.map { ($0 as NSString).lastPathComponent } ?? "None")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .font(.caption)
+                        .foregroundStyle(parameters.loraPath == nil ? .secondary : .primary)
+
+                    Spacer()
+
+                    Button {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.init(filenameExtension: "safetensors")!]
+                        panel.allowsMultipleSelection = false
+                        panel.canChooseDirectories = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            parameters.loraPath = url.path
+                        }
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Choose LoRA (.safetensors)")
+
+                    if parameters.loraPath != nil {
+                        Button {
+                            parameters.loraPath = nil
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Remove LoRA")
+                    }
+                }
+
+                if parameters.loraPath != nil {
+                    HStack(spacing: 6) {
+                        Text("Strength")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Slider(value: $parameters.loraStrength, in: 0.0...2.0, step: 0.05)
+                        Text(String(format: "%.2f", parameters.loraStrength))
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .frame(width: 36, alignment: .trailing)
+                    }
+                }
+            }
+
             Divider()
             
             // Parameters

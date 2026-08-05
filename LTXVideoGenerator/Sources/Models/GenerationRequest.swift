@@ -302,7 +302,9 @@ struct GenerationParameters: Codable, Equatable, Hashable {
     var seed: Int?
     var vaeTilingMode: String
     var imageStrength: Double
-    
+    var loraPath: String?
+    var loraStrength: Double
+
     // Default for LTX-2 on Apple Silicon
     static let `default` = GenerationParameters(
         numInferenceSteps: 30,
@@ -313,9 +315,11 @@ struct GenerationParameters: Codable, Equatable, Hashable {
         fps: 24,
         seed: nil,
         vaeTilingMode: "auto",
-        imageStrength: 1.0
+        imageStrength: 1.0,
+        loraPath: nil,
+        loraStrength: 1.0
     )
-    
+
     // Quick preview - fewer frames and steps
     static let preview = GenerationParameters(
         numInferenceSteps: 15,
@@ -326,9 +330,11 @@ struct GenerationParameters: Codable, Equatable, Hashable {
         fps: 24,
         seed: nil,
         vaeTilingMode: "auto",
-        imageStrength: 1.0
+        imageStrength: 1.0,
+        loraPath: nil,
+        loraStrength: 1.0
     )
-    
+
     // High quality - more steps
     static let highQuality = GenerationParameters(
         numInferenceSteps: 40,
@@ -339,7 +345,9 @@ struct GenerationParameters: Codable, Equatable, Hashable {
         fps: 24,
         seed: nil,
         vaeTilingMode: "auto",
-        imageStrength: 1.0
+        imageStrength: 1.0,
+        loraPath: nil,
+        loraStrength: 1.0
     )
     
     var estimatedDuration: String {

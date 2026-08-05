@@ -13,6 +13,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import mlx.utils as mx_utils
 import numpy as np
+from safetensors import safe_open
 from tqdm import tqdm
 
 
@@ -1226,6 +1227,96 @@ def mux_video_audio(video_path: Path, audio_path: Path, output_path: Path):
         return False
 
 
+def load_and_merge_lora(
+    model: nn.Module,
+    lora_path: str,
+    strength: float = 1.0,
+) -> None:
+    """Load a LoRA adapter (.safetensors) and merge it into the transformer.
+
+    Supports both raw PyTorch LoRAs (keys like ``lora_unet_*.lora_A.weight`` /
+    ``diffusion_model.*.lora_A.weight``) and pre-converted MLX LoRAs
+    (``*.lora_A`` / ``*.lora_B``). Merges in-place with the given strength:
+    ``weight += strength * lora_B @ lora_A``.
+    """
+    import re
+
+    path = Path(lora_path)
+    if not path.exists():
+        raise FileNotFoundError(f"LoRA file not found: {path}")
+
+    print(f"{Colors.BLUE}🎛️  Loading LoRA: {path.name} (strength={strength}){Colors.RESET}")
+
+    # Collect all lora_A / lora_B tensors from the safetensors file.
+    loras = {}
+    with safe_open(str(path), framework="numpy") as f:
+        for key in f.keys():
+            if "lora_A" in key or "lora_B" in key:
+                loras[key] = f.get_tensor(key)
+
+    if not loras:
+        raise ValueError(f"No LoRA tensors found in {path.name}")
+
+    # Build a lookup of module parameter names -> (lora_A, lora_B).
+    # Keys come in two shapes:
+    #   raw:      diffusion_model.transformer_blocks.0.attn1.to_q.lora_A.weight
+    #   mlx:      model.layers.0.self_attn.q_proj.lora_A
+    # We strip known prefixes/suffixes to recover the target weight name.
+    def _target_name(key: str) -> Optional[str]:
+        base = key
+        # Strip trailing .weight / .lora_A / .lora_B
+        base = re.sub(r"\.(lora_A|lora_B)(\.weight)?$", "", base)
+        # Strip common prefixes
+        for prefix in (
+            "diffusion_model.",
+            "lora_unet_",
+            "model.diffusion_model.",
+            "transformer.",
+            "model.",
+        ):
+            if base.startswith(prefix):
+                base = base[len(prefix):]
+                break
+        return base
+
+    pairs: dict[str, tuple] = {}
+    for key, tensor in loras.items():
+        target = _target_name(key)
+        if target is None:
+            continue
+        if key.endswith("lora_A") or key.endswith("lora_A.weight"):
+            pairs.setdefault(target, [None, None])[0] = tensor
+        elif key.endswith("lora_B") or key.endswith("lora_B.weight"):
+            pairs.setdefault(target, [None, None])[1] = tensor
+
+    merged = 0
+    for target, (a, b) in pairs.items():
+        if a is None or b is None:
+            continue
+        try:
+            param = model
+            for part in target.split("."):
+                if part.isdigit():
+                    param = param[int(part)]
+                else:
+                    param = getattr(param, part)
+            if not isinstance(param, mx.array):
+                continue
+            a_mx = mx.array(a)
+            b_mx = mx.array(b)
+            delta = (b_mx @ a_mx) * strength
+            param = param + delta
+            merged += 1
+        except (AttributeError, IndexError, TypeError):
+            continue
+
+    if merged == 0:
+        raise ValueError(
+            f"Could not match any LoRA weights to the model from {path.name}"
+        )
+    print(f"{Colors.GREEN}✅ Merged {merged} LoRA layers{Colors.RESET}")
+
+
 def generate_video_with_audio(
     model_repo: str,
     text_encoder_repo: Optional[str],
@@ -1253,6 +1344,8 @@ def generate_video_with_audio(
     no_audio: bool = False,
     preview_every: int = 0,
     preview_dir: Optional[str] = None,
+    lora_path: Optional[str] = None,
+    lora_strength: float = 1.0,
 ):
     """Generate video with synchronized audio from text prompt, optionally conditioned on an image.
 
@@ -1636,6 +1729,10 @@ def generate_video_with_audio(
 
     transformer.load_weights(list(sanitized.items()), strict=False)
     _eval_tree_in_chunks(transformer.parameters(), "TRANSFORMER")
+
+    # Apply LoRA adapter if provided.
+    if lora_path:
+        load_and_merge_lora(transformer, lora_path, strength=lora_strength)
 
     # Load VAE encoder and encode image for I2V conditioning
     stage1_image_latent = None
@@ -2210,6 +2307,18 @@ Examples:
         default=None,
         help="Directory to write latent preview frames into",
     )
+    parser.add_argument(
+        "--lora-path",
+        type=str,
+        default=None,
+        help="Path to a LoRA adapter (.safetensors) to apply to the transformer",
+    )
+    parser.add_argument(
+        "--lora-strength",
+        type=float,
+        default=1.0,
+        help="LoRA merge strength (default: 1.0)",
+    )
 
     args = parser.parse_args()
 
@@ -2240,6 +2349,8 @@ Examples:
         no_audio=args.no_audio,
         preview_every=args.preview_every,
         preview_dir=args.preview_dir,
+        lora_path=args.lora_path,
+        lora_strength=args.lora_strength,
     )
 
 
