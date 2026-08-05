@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var generationService: GenerationService
     @EnvironmentObject var historyManager: HistoryManager
     @EnvironmentObject var presetManager: PresetManager
+    @Environment(\.scenePhase) private var scenePhase
 
     // Persisted across app launches (issue #51).
     @AppStorage(SessionSettings.promptKey) private var prompt = ""
@@ -52,6 +53,13 @@ struct ContentView: View {
         }
         .onChange(of: parameters) { _, newValue in
             SessionSettings.saveParameters(newValue)
+        }
+        // Safety net: continuous slider drags can miss the per-change onChange,
+        // so also persist whenever the app backgrounds or quits.
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active {
+                SessionSettings.saveParameters(parameters)
+            }
         }
     }
     
