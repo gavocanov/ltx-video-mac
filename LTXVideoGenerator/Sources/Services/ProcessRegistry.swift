@@ -5,9 +5,24 @@ final class ProcessRegistry {
     static let shared = ProcessRegistry()
 
     private var processes: [Process] = []
+    /// Child PIDs announced by each runner (CHILD_PID=...), keyed by the
+    /// runner's Process identity. These are authoritative — pgrep is unreliable.
+    private var childPIDsByProcess: [ObjectIdentifier: Int32] = [:]
+    /// Runner PIDs that were killed by cancel. runPython consults this to
+    /// distinguish "killed by user cancel" from a real failure, so no spurious
+    /// "generation failed" dialog appears. Set synchronously in killCurrentTree,
+    /// independent of async task-cancellation callbacks.
+    private var cancelledRunnerPIDs: Set<Int32> = []
     private let lock = NSLock()
 
     private init() {}
+
+    /// True if the given runner PID was killed by a user cancel.
+    func wasCancelled(runnerPID: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelledRunnerPIDs.contains(runnerPID)
+    }
 
     func register(_ process: Process) {
         lock.lock()
@@ -18,6 +33,15 @@ final class ProcessRegistry {
     func unregister(_ process: Process) {
         lock.lock()
         processes.removeAll { $0 === process }
+        childPIDsByProcess[ObjectIdentifier(process)] = nil
+        lock.unlock()
+    }
+
+    /// Record the generation subprocess PID announced by a runner. This is the
+    /// authoritative child PID used for cancellation (pgrep is unreliable).
+    func registerChildPID(_ pid: Int32, for process: Process) {
+        lock.lock()
+        childPIDsByProcess[ObjectIdentifier(process)] = pid
         lock.unlock()
     }
 
@@ -51,7 +75,7 @@ final class ProcessRegistry {
         return true
     }
 
-    /// Kill the current generation's entire process tree by walking PIDs with
+    /// Kill the current generation's process tree by walking PIDs with
     /// `pgrep -P` (never the process group, which would hit the shared Python
     /// env). Called directly from cancel, independent of task cancellation.
     func killCurrentTree() {
@@ -61,40 +85,25 @@ final class ProcessRegistry {
             return
         }
         let runnerPID = process.processIdentifier
+        let trackedChildPID = childPIDsByProcess[ObjectIdentifier(process)]
         processes.removeAll { $0 === process }
+        childPIDsByProcess[ObjectIdentifier(process)] = nil
+        // Mark this runner as cancelled BEFORE killing, so runPython can tell a
+        // user cancel apart from a real failure (no spurious error dialog).
+        cancelledRunnerPIDs.insert(runnerPID)
         lock.unlock()
 
+        // Only kill the runner and its generation subprocess — never walk
+        // further up or use a group kill, so the app's shared Python env is
+        // untouched. The tracked CHILD_PID is authoritative (announced by the
+        // runner); pgrep proved unreliable, so we do not fall back to it.
         var pids = [runnerPID]
-        var queue = [runnerPID]
-        while !queue.isEmpty {
-            let parent = queue.removeFirst()
-            for c in Self.childPIDs(of: parent) where !pids.contains(c) {
-                pids.append(c)
-                queue.append(c)
-            }
+        if let trackedChildPID, trackedChildPID > 0, !pids.contains(trackedChildPID) {
+            pids.append(trackedChildPID)
         }
         for pid in pids.reversed() where pid > 0 {
             kill(pid, SIGKILL)
         }
         process.terminate()
-    }
-
-    /// Direct child PIDs of `parent` via `pgrep -P`.
-    private static func childPIDs(of parent: Int32) -> [Int32] {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-P", "\(parent)"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = Pipe()
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            return []
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let str = String(data: data, encoding: .utf8) else { return [] }
-        return str.split(whereSeparator: \.isNewline).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 }

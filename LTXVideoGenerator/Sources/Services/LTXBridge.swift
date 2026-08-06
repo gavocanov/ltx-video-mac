@@ -50,7 +50,21 @@ private final class ProcessBox {
 }
 
 // Use subprocess to run MLX-based generation
-class LTXBridge {
+/// Abstraction over the generation bridge so GenerationService can be tested
+/// with a fake implementation (no real subprocess / Python).
+protocol GenerationBridging {
+    var isModelLoaded: Bool { get }
+    func loadModel(progressHandler: @escaping (String) -> Void) async throws
+    func unloadModel() async
+    func generate(
+        request: GenerationRequest,
+        outputPath: String,
+        progressHandler: @escaping (Double, String) -> Void,
+        previewHandler: ((String) -> Void)?
+    ) async throws -> (videoPath: String, seed: Int, enhancedPrompt: String?)
+}
+
+class LTXBridge: GenerationBridging {
     static let shared = LTXBridge()
 
     private static func stderrIndicatesMetalInteractivity(_ stderr: String) -> Bool {
@@ -710,10 +724,12 @@ class LTXBridge {
                     timer.cancel()
                     ProcessRegistry.shared.unregister(process)
                     let didTimeout = timedOut.wait(timeout: .now()) == .success
-                    // If the task was cancelled, do NOT resume the continuation —
-                    // withCheckedThrowingContinuation already throws CancellationError.
-                    // Resuming again would double-resume and crash the app.
+                    // If cancelled, resume with CancellationError so the awaiting
+                    // task unwinds (withCheckedThrowingContinuation does NOT
+                    // auto-throw on cancellation; leaving it suspended would hang
+                    // the caller and stall the queue).
                     if processBox.isCancelled {
+                        continuation.resume(throwing: CancellationError())
                         return
                     }
                     if didTimeout {
@@ -731,7 +747,10 @@ class LTXBridge {
                         continuation.resume(returning: trimmed)
                     }
                 } catch {
-                    if processBox.isCancelled { return }
+                    if processBox.isCancelled {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     continuation.resume(throwing: LTXError.generationFailed(error.localizedDescription))
                 }
             }
@@ -782,10 +801,16 @@ class LTXBridge {
 
         let logFile = logFile
 
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: python)
+        // Track cancellation so the background completion handler never resumes
+        // the continuation after the task was cancelled (double-resume crashes
+        // the app). Actual process killing is done by killCurrentTree().
+        let processBox = ProcessBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let process = Process()
+                    processBox.process = process
+                    process.executableURL = URL(fileURLWithPath: python)
                 if scriptArgs.isEmpty {
                     process.arguments = ["-c", script]
                 } else {
@@ -879,7 +904,21 @@ class LTXBridge {
                     
                     let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                     let output = String(data: outputData, encoding: .utf8) ?? ""
-                    
+                    // True if this job was cancelled by the user (either via task
+                    // cancellation or because killCurrentTree killed its runner).
+                    // Distinguishes cancel from a real failure so no spurious
+                    // "generation failed" dialog appears.
+                    let cancelledByUser = processBox.isCancelled
+                        || ProcessRegistry.shared.wasCancelled(runnerPID: process.processIdentifier)
+                    // Capture the runner's child PID (announced as CHILD_PID:<n>)
+                    // so cancellation can kill this exact job by PID.
+                    if let range = output.range(of: "CHILD_PID:"),
+                       let pidStr = output[range.upperBound...].split(separator: "\n").first,
+                       let pid = Int32(pidStr.trimmingCharacters(in: .whitespaces)) {
+                        processBox.childPID = pid
+                        ProcessRegistry.shared.registerChildPID(pid, for: process)
+                    }
+
                     let outputLog = "\n[STDOUT] \(output)\n[EXIT CODE] \(process.terminationStatus)\n"
                     if let handle = FileHandle(forWritingAtPath: logFile) {
                         handle.seekToEndOfFile()
@@ -889,11 +928,15 @@ class LTXBridge {
                     
                     let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
                     if let data = trimmedOutput.data(using: .utf8),
-                       let _ = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        let _ = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        if cancelledByUser {
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
                         continuation.resume(returning: trimmedOutput)
                         return
                     }
-                    
+
                     if process.terminationStatus != 0 {
                         stderrLock.lock()
                         let stderr = stderrAccumulated
@@ -904,6 +947,10 @@ class LTXBridge {
                                             stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         
                         if !trimmedOutput.isEmpty && isOnlyHarmless {
+                            if cancelledByUser {
+                                continuation.resume(throwing: CancellationError())
+                                return
+                            }
                             continuation.resume(returning: trimmedOutput)
                         } else {
                             let excerpt = LTXGenerationLogSummary.userFacingExcerpt(path: logFile)
@@ -923,9 +970,17 @@ class LTXBridge {
                                 path: logFile,
                                 lines: ["", "=== Swift runner summary ===", message]
                             )
+                            if cancelledByUser {
+                                continuation.resume(throwing: CancellationError())
+                                return
+                            }
                             continuation.resume(throwing: LTXError.generationFailed(message))
                         }
                     } else {
+                        if cancelledByUser {
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
                         continuation.resume(returning: trimmedOutput)
                     }
                 } catch {
@@ -935,9 +990,21 @@ class LTXBridge {
                         handle.write(errorLog.data(using: .utf8)!)
                         handle.closeFile()
                     }
+                    if processBox.isCancelled
+                        || ProcessRegistry.shared.wasCancelled(runnerPID: process.processIdentifier) {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     continuation.resume(throwing: LTXError.generationFailed(error.localizedDescription))
                 }
             }
+        }
+        } onCancel: {
+            // Mark cancelled so the background completion handler won't resume
+            // the continuation (avoiding a double-resume crash). Actual process
+            // killing is done by ProcessRegistry.killCurrentTree() from the
+            // cancel button — not here, to avoid any risk of hitting the app.
+            processBox.isCancelled = true
         }
     }
 }

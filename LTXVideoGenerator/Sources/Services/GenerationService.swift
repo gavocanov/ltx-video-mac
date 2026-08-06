@@ -14,11 +14,18 @@ class GenerationService: ObservableObject {
     @Published var error: LTXError?
     
     private let historyManager: HistoryManager
-    private let bridge = LTXBridge.shared
+    private let bridge: GenerationBridging
+    /// Injectable Python-env readiness check (defaults to the real one). Tests
+    /// override this to avoid real Python work.
+    var pythonEnvCheck: ((String) async -> (success: Bool, message: String, details: PythonDetails?))?
     private var processingTask: Task<Void, Never>?
-    
-    nonisolated init(historyManager: HistoryManager) {
+
+    nonisolated init(historyManager: HistoryManager, bridge: GenerationBridging = LTXBridge.shared) {
         self.historyManager = historyManager
+        self.bridge = bridge
+        self.pythonEnvCheck = { path in
+            await PythonEnvironment.shared.ensureReadyForGeneration(path: path)
+        }
     }
     
     // MARK: - Queue Management
@@ -47,10 +54,15 @@ class GenerationService: ObservableObject {
     }
     
     func cancelCurrent() {
+        // Cancel the task FIRST so withTaskCancellationHandler's onCancel sets
+        // isCancelled synchronously. If we killed the process first, the
+        // background thread could observe isCancelled==false and report a
+        // spurious "generation failed" dialog instead of treating it as a
+        // cancel.
+        processingTask?.cancel()
         // Kill the running subprocess tree deterministically by PID — this does
         // NOT depend on Swift task-cancellation firing (which was unreliable).
         ProcessRegistry.shared.killCurrentTree()
-        processingTask?.cancel()
         if let request = currentRequest,
            let index = queue.firstIndex(where: { $0.id == request.id }) {
             queue[index].status = .cancelled
@@ -59,8 +71,11 @@ class GenerationService: ObservableObject {
         isProcessing = false
         progress = 0
         statusMessage = ""
-        // Remove completed/failed/cancelled items from the queue.
-        queue.removeAll { $0.status != .pending }
+        // NOTE: do NOT remove items from the queue here. The unwinding
+        // processRequest task still holds `index` and will write
+        // queue[index].status; removing items now would make that index out of
+        // bounds and crash the app. Let processRequest's own cleanup remove
+        // non-pending items, then its completion re-triggers processNextIfNeeded.
     }
     
     func moveUp(_ request: GenerationRequest) {
@@ -134,7 +149,7 @@ class GenerationService: ObservableObject {
         // Ensure Python packages (including mlx-video-with-audio min version) match the path in Settings — no manual Validate required.
         if let pythonPath = UserDefaults.standard.string(forKey: "pythonPath"), !pythonPath.isEmpty {
             statusMessage = "Checking Python environment..."
-            let ensure = await PythonEnvironment.shared.ensureReadyForGeneration(path: pythonPath)
+            let ensure = await (pythonEnvCheck?(pythonPath) ?? (success: false, message: "no check", details: nil))
             if !ensure.success {
                 queue[index].status = .failed
                 error = .generationFailed(ensure.message)
