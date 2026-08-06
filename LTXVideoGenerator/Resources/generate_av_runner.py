@@ -45,13 +45,6 @@ def parse_args():
 
 
 def main():
-    # Become a new session / process-group leader so the macOS app can kill this
-    # runner AND its child (generate_av.py) with a single kill(-pid, SIGKILL).
-    try:
-        os.setsid()
-    except OSError:
-        pass  # already a group leader (e.g. run from a terminal)
-
     args = parse_args()
 
     log_file = open(args.log_file, "w")
@@ -251,12 +244,18 @@ def main():
             stderr=subprocess.STDOUT
         )
 
-        # Forward termination signals to the child so killing this runner also
-        # stops generate_av.py (the macOS app sends SIGTERM via process.terminate()).
+        # Announce the child PID so the macOS app can kill this exact job by PID
+        # (never the process group, which would hit the shared Python env).
+        print(f"CHILD_PID:{process.pid}", flush=True)
+
+        # When this runner is terminated (macOS app sends SIGTERM via
+        # process.terminate()), SIGKILL the child so generate_av.py stops
+        # immediately. We kill by the child's PID only — never the process
+        # group, which would hit the app's shared Python environment.
         def _forward_signal(signum, frame):
             try:
                 if process.poll() is None:
-                    process.send_signal(signum)
+                    process.kill()
             except Exception:
                 pass
             sys.exit(128 + signum)

@@ -27,10 +27,25 @@ enum LTXError: LocalizedError, Equatable {
 private final class ProcessBox {
     private let lock = NSLock()
     private var _process: Process?
+    private var _cancelled = false
+    private var _childPID: Int32 = 0
 
     var process: Process? {
         get { lock.lock(); defer { lock.unlock() }; return _process }
         set { lock.lock(); _process = newValue; lock.unlock() }
+    }
+
+    /// PID of the runner's child (generate_av.py), announced via CHILD_PID:.
+    var childPID: Int32 {
+        get { lock.lock(); defer { lock.unlock() }; return _childPID }
+        set { lock.lock(); _childPID = newValue; lock.unlock() }
+    }
+
+    /// Set when the task is cancelled, so the background completion handler
+    /// knows not to resume the continuation (avoiding a double-resume crash).
+    var isCancelled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _cancelled }
+        set { lock.lock(); _cancelled = newValue; lock.unlock() }
     }
 }
 
@@ -43,6 +58,25 @@ class LTXBridge {
         return low.contains("diagnostic_metal_interactivity")
             || low.contains("impacting interactivity")
             || low.contains("kiogpucommandbuffercallbackerrorimpactinginteractivity")
+    }
+
+    /// Returns the direct child PIDs of `parent` via `pgrep -P`.
+    private static func childPIDs(of parent: Int32) -> [Int32] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        p.arguments = ["-P", "\(parent)"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            return []
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let str = String(data: data, encoding: .utf8) else { return [] }
+        return str.split(whereSeparator: \.isNewline).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 
     private(set) var isModelLoaded = false
@@ -452,8 +486,9 @@ class LTXBridge {
             }
             }
         } catch {
-            let excerpt = LTXGenerationLogSummary.userFacingExcerpt()
+            let excerpt = LTXGenerationLogSummary.userFacingExcerpt(path: logFile)
             LTXGenerationLogSummary.appendToLog(
+                path: logFile,
                 lines: ["", "=== Swift failure ===", error.localizedDescription, "", excerpt]
             )
             let extra = excerpt.isEmpty ? "" : "\n\n--- Full log ---\n" + excerpt
@@ -645,6 +680,18 @@ class LTXBridge {
                         }
                     }
                 }
+                // Capture the runner's child PID (announced as CHILD_PID:<n>) so
+                // cancellation can kill this exact job by PID.
+                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if !data.isEmpty, let str = String(data: data, encoding: .utf8) {
+                        if let range = str.range(of: "CHILD_PID:"),
+                           let pidStr = str[range.upperBound...].split(separator: "\n").first,
+                           let pid = Int32(pidStr.trimmingCharacters(in: .whitespaces)) {
+                            processBox.childPID = pid
+                        }
+                    }
+                }
                 do {
                     try process.run()
                     // Put in its own process group so we can kill the whole tree on quit.
@@ -656,8 +703,6 @@ class LTXBridge {
                     timer.schedule(deadline: .now() + timeout)
                     timer.setEventHandler {
                         process.terminate()
-                        // Kill the whole process group (children may outlive the parent).
-                        kill(-process.processIdentifier, SIGKILL)
                         timedOut.signal()
                     }
                     timer.resume()
@@ -665,6 +710,12 @@ class LTXBridge {
                     timer.cancel()
                     ProcessRegistry.shared.unregister(process)
                     let didTimeout = timedOut.wait(timeout: .now()) == .success
+                    // If the task was cancelled, do NOT resume the continuation —
+                    // withCheckedThrowingContinuation already throws CancellationError.
+                    // Resuming again would double-resume and crash the app.
+                    if processBox.isCancelled {
+                        return
+                    }
                     if didTimeout {
                         continuation.resume(throwing: LTXError.generationFailed("Timed out after \(Int(timeout))s"))
                         return
@@ -680,16 +731,39 @@ class LTXBridge {
                         continuation.resume(returning: trimmed)
                     }
                 } catch {
+                    if processBox.isCancelled { return }
                     continuation.resume(throwing: LTXError.generationFailed(error.localizedDescription))
                 }
             }
         }
         } onCancel: {
-            // Kill the runner by PID only (never -pid, which could hit the
-            // app's process group). The runner forwards SIGTERM to its child.
-            if let process = processBox.process, process.isRunning {
-                process.terminate()
+            // Mark cancelled so the background completion handler won't resume
+            // the continuation (avoiding a double-resume crash), then kill this
+            // exact job by PID — the runner AND all its descendants. Never use
+            // -pid (group kill), which would hit the shared Python env.
+            processBox.isCancelled = true
+            LTXGenerationLogSummary.appendToLog(lines: ["[CANCEL] onCancel fired"])
+            guard let process = processBox.process else {
+                LTXGenerationLogSummary.appendToLog(lines: ["[CANCEL] no process captured"])
+                return
             }
+            let runnerPID = process.processIdentifier
+            LTXGenerationLogSummary.appendToLog(lines: ["[CANCEL] runner pid=\(runnerPID) running=\(process.isRunning)"])
+            var pids = [runnerPID]
+            var queue = [runnerPID]
+            while !queue.isEmpty {
+                let parent = queue.removeFirst()
+                let children = Self.childPIDs(of: parent)
+                for c in children where !pids.contains(c) {
+                    pids.append(c)
+                    queue.append(c)
+                }
+            }
+            LTXGenerationLogSummary.appendToLog(lines: ["[CANCEL] killing pids=\(pids)"])
+            for pid in pids.reversed() where pid > 0 {
+                kill(pid, SIGKILL)
+            }
+            process.terminate()
         }
     }
 
@@ -832,12 +906,12 @@ class LTXBridge {
                         if !trimmedOutput.isEmpty && isOnlyHarmless {
                             continuation.resume(returning: trimmedOutput)
                         } else {
-                            let excerpt = LTXGenerationLogSummary.userFacingExcerpt()
+                            let excerpt = LTXGenerationLogSummary.userFacingExcerpt(path: logFile)
                             if Self.stderrIndicatesMetalInteractivity(stderr),
                                originalVaeTilingMode == "aggressive" {
                                 GenerationFailureRecovery.recordMetalInteractivityFailureWithAggressiveTiling()
                             }
-                            var message = "Exit code \(process.terminationStatus). Check /tmp/ltx_generation.log"
+                            var message = "Exit code \(process.terminationStatus). Check \(logFile)"
                             if !stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 message += "\n\n--- Recent stderr ---\n"
                                     + String(stderr.suffix(8000))
@@ -846,6 +920,7 @@ class LTXBridge {
                                 message += "\n\n--- Full log ---\n" + excerpt
                             }
                             LTXGenerationLogSummary.appendToLog(
+                                path: logFile,
                                 lines: ["", "=== Swift runner summary ===", message]
                             )
                             continuation.resume(throwing: LTXError.generationFailed(message))

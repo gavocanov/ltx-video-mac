@@ -105,6 +105,21 @@ def _ensure_enhancer_model(repo_id: str) -> None:
     if not snap_dir.exists():
         return
 
+    # Fast path: if the local model index lists shards and they're all present,
+    # skip entirely — no HF API calls on every generation.
+    index_file = snap_dir / "model.safetensors.index.json"
+    if index_file.exists():
+        try:
+            idx = json.loads(index_file.read_text())
+            expected = sorted(
+                {v.split(".")[0] + "." + v.split(".")[1]
+                 for v in idx.get("weight_map", {}).values()}
+            )
+            if expected and all((snap_dir / f).exists() for f in expected):
+                return
+        except Exception:
+            pass
+
     api = HfApi()
     try:
         files = api.list_repo_files(repo_id)
@@ -112,6 +127,10 @@ def _ensure_enhancer_model(repo_id: str) -> None:
         return
     shards = [f for f in files if f.endswith(".safetensors")]
     if not shards:
+        return
+
+    # If every shard is already present locally, skip (no per-file API checks).
+    if all((snap_dir / f).exists() for f in shards):
         return
 
     for fname in shards:
@@ -1407,6 +1426,14 @@ def load_and_merge_lora(
             if base.startswith(prefix):
                 base = base[len(prefix):]
                 break
+        # Normalize DiT/Flux-style names to this model's structure.
+        #   attn1.to_out.0  -> attn1.to_out
+        #   attn2.to_out.0  -> attn2.to_out
+        #   ff.net.0.proj   -> ff.proj_in
+        #   ff.net.2        -> ff.proj_out
+        base = re.sub(r"(attn[12])\.to_out\.0$", r"\1.to_out", base)
+        base = re.sub(r"ff\.net\.0\.proj$", "ff.proj_in", base)
+        base = re.sub(r"ff\.net\.2$", "ff.proj_out", base)
         return base
 
     pairs: dict[str, tuple] = {}
@@ -1418,6 +1445,10 @@ def load_and_merge_lora(
             pairs.setdefault(target, [None, None])[0] = tensor
         elif key.endswith("lora_B") or key.endswith("lora_B.weight"):
             pairs.setdefault(target, [None, None])[1] = tensor
+
+    print(f"[LORA] file has {len(loras)} tensors, {len(pairs)} A/B pairs", flush=True)
+    for k in list(loras.keys())[:5]:
+        print(f"[LORA]   key: {k}", flush=True)
 
     # Collect every leaf parameter path in the model so we can match LoRA
     # targets by suffix regardless of the prefix convention used in the file.
@@ -1442,6 +1473,9 @@ def load_and_merge_lora(
         return out
 
     leaf_paths = _leaf_paths(model)
+    print(f"[LORA] model has {len(leaf_paths)} leaf params", flush=True)
+    for p in leaf_paths[:5]:
+        print(f"[LORA]   param: {p}", flush=True)
 
     merged = 0
     for target, (a, b) in pairs.items():
@@ -1450,6 +1484,7 @@ def load_and_merge_lora(
         try:
             # Resolve the target path; fall back to suffix matching against the
             # model's real leaf paths when the stripped name doesn't resolve.
+            resolved_path = None
             param = model
             resolved = True
             for part in target.split("."):
@@ -1465,7 +1500,9 @@ def load_and_merge_lora(
                     except AttributeError:
                         resolved = False
                         break
-            if not resolved or not isinstance(param, mx.array):
+            if resolved and isinstance(param, mx.array):
+                resolved_path = target
+            else:
                 # Suffix fallback: find a real leaf path ending with this target
                 # (ignoring the trailing .weight/.bias on the model side).
                 match = None
@@ -1475,6 +1512,7 @@ def load_and_merge_lora(
                         match = p
                         break
                 if match is None:
+                    print(f"[LORA]   no match for target: {target}", flush=True)
                     continue
                 param = model
                 for part in match.split("."):
@@ -1482,20 +1520,82 @@ def load_and_merge_lora(
                         param = param[int(part)]
                     else:
                         param = getattr(param, part)
+                resolved_path = match
             if not isinstance(param, mx.array):
                 continue
+
+            # If this is a quantized weight (uint32 packed), dequantize the
+            # parent QuantizedLinear first so we merge against the real shape.
+            quant_mod = None
+            if param.dtype == mx.uint32:
+                mod = model
+                mod_parts = resolved_path.split(".")[:-1]
+                ok = True
+                for part in mod_parts:
+                    if part.isdigit():
+                        try:
+                            mod = mod[int(part)]
+                        except (IndexError, KeyError, TypeError):
+                            ok = False
+                            break
+                    else:
+                        try:
+                            mod = getattr(mod, part)
+                        except AttributeError:
+                            ok = False
+                            break
+                if ok and isinstance(mod, nn.QuantizedLinear):
+                    quant_mod = mod
+                    param = mx.dequantize(
+                        mod.weight, mod.scales, mod.biases,
+                        group_size=mod.group_size, bits=mod.bits,
+                    )
+                else:
+                    print(f"[LORA]   quantized layer not handled, skipping: {target}", flush=True)
+                    continue
+
             a_mx = mx.array(a)
             b_mx = mx.array(b)
-            delta = (b_mx @ a_mx) * strength
-            # Some LoRA files store A/B in the opposite order; try both.
-            if delta.shape != param.shape:
-                alt = (a_mx @ b_mx) * strength
-                if alt.shape == param.shape:
-                    delta = alt
-                else:
+            # Compute delta, trying both A/B orders; skip layers whose LoRA
+            # matrices don't fit (mismatched dims or wrong layer).
+            delta = None
+            for order in ((b_mx, a_mx), (a_mx, b_mx)):
+                try:
+                    d = (order[0] @ order[1]) * strength
+                except Exception:
                     continue
-            # Cast to a concrete MLX dtype; passing param.dtype (an MLX Dtype
-            # object) to .astype() leaks into numpy and fails on bfloat16.
+                if d.shape == param.shape:
+                    delta = d
+                    break
+            if delta is None:
+                print(f"[LORA]   shape mismatch, skipping: {target}", flush=True)
+                continue
+
+            if quant_mod is not None:
+                # Keep the merged layer in full precision (bf16) instead of
+                # re-quantizing — re-quantizing every layer is very slow.
+                new_w = param + delta.astype(param.dtype)
+                bias = getattr(quant_mod, "bias", None)
+                plain = nn.Linear(
+                    new_w.shape[1], new_w.shape[0], bias=bias is not None
+                )
+                plain.weight = new_w
+                if bias is not None:
+                    plain.bias = bias
+                # Replace the QuantizedLinear in its parent module.
+                parts = resolved_path.split(".")
+                mod_name = parts[-2]
+                parent = model
+                for part in parts[:-2]:
+                    if part.isdigit():
+                        parent = parent[int(part)]
+                    else:
+                        parent = getattr(parent, part)
+                setattr(parent, mod_name, plain)
+                merged += 1
+                continue
+
+            # Plain (non-quantized) weight: cast delta and add.
             target_dtype = mx.bfloat16 if param.dtype == mx.bfloat16 else mx.float32
             param = param + delta.astype(target_dtype)
             merged += 1

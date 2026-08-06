@@ -70,3 +70,6 @@ AppIcon.aseprite
 AppIcon_128.png
 AppIcon.icns
 AppIcon.iconset/
+
+# Local test output
+tmp/

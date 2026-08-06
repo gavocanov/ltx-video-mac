@@ -47,9 +47,9 @@ class GenerationService: ObservableObject {
     }
     
     func cancelCurrent() {
-        // Kill the running subprocess deterministically (the task cancellation
-        // alone does not stop the Python script).
-        ProcessRegistry.shared.terminateCurrent()
+        // Kill the running subprocess tree deterministically by PID — this does
+        // NOT depend on Swift task-cancellation firing (which was unreliable).
+        ProcessRegistry.shared.killCurrentTree()
         processingTask?.cancel()
         if let request = currentRequest,
            let index = queue.firstIndex(where: { $0.id == request.id }) {
